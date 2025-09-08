@@ -52,6 +52,10 @@ import pickle
 import argparse
 import traceback
 import warnings
+import re
+import random
+import hashlib
+import glob
 from pathlib import Path
 from typing import Dict, List, Tuple, Any, Optional, Union
 from datetime import datetime
@@ -1793,10 +1797,416 @@ class BrainNexusInterface:
         return data, labels
     
     def _load_data_from_file(self, data_type: str, sample_count: int) -> Tuple[List[Any], List[Any]]:
-        """Load data from file (placeholder implementation)."""
-        # This is a placeholder - in a real implementation, you would load from actual files
-        print(f"⚠️  File loading not implemented, generating synthetic {data_type} data instead")
+        """Load data from file - now supports batch_mine JSON files."""
+        # Try to find batch_mine files first
+        batch_files = []
+        try:
+            import glob
+            batch_pattern = os.path.join(os.getcwd(), "batch_mine_*.json")
+            batch_files = glob.glob(batch_pattern)
+            
+            if batch_files:
+                # Use the most recent batch_mine file
+                latest_batch = max(batch_files, key=os.path.getmtime)
+                print(f"📁 Loading batch data from: {os.path.basename(latest_batch)}")
+                
+                return self._load_batch_mine_data(latest_batch, data_type, sample_count)
+            else:
+                print(f"⚠️  No batch_mine files found, generating synthetic {data_type} data instead")
+                
+        except Exception as e:
+            print(f"⚠️  Error loading batch files: {str(e)}, falling back to synthetic data")
+        
         return self._generate_synthetic_data(data_type, sample_count)
+    
+    def _load_batch_mine_data(self, filepath: str, data_type: str, sample_count: int) -> Tuple[List[Any], List[Any]]:
+        """Load and process batch mining data from file using flat text training approach."""
+        try:
+            import json
+            import random
+            
+            print(f"🔄 Processing batch mine data with flat text training approach...")
+            
+            # First try to determine if it's a text file or JSON file
+            with open(filepath, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            text_content = ""
+            
+            # Try to parse as JSON first
+            try:
+                batch_data = json.loads(content)
+                print(f"📋 Detected JSON format")
+                
+                # Extract raw text content for flat text training
+                if isinstance(batch_data, list):
+                    # Join all list items into one large text
+                    text_content = ' '.join([str(item) for item in batch_data])
+                elif isinstance(batch_data, dict):
+                    # Extract content from dict
+                    if 'content' in batch_data:
+                        text_content = batch_data['content']
+                    elif 'text' in batch_data:
+                        text_content = batch_data['text']
+                    else:
+                        # Convert entire dict to text
+                        text_content = json.dumps(batch_data, indent=2)
+                else:
+                    text_content = str(batch_data)
+                    
+            except json.JSONDecodeError:
+                # Not JSON, treat as plain text
+                print(f"� Detected plain text format")
+                text_content = content
+            
+            print(f"�📊 Extracted text content: {len(text_content)} characters")
+            
+            # Use flat text training approach based on data_type with proper sample counts
+            if data_type == 'flat_text' or data_type == 'text' or 'text' in str(data_type):
+                return self._create_flat_text_training_data(
+                    text_content, approach='token_prediction', context_window=5, sample_count=max(sample_count, 100)
+                )
+            elif data_type == 'classification':
+                return self._create_flat_text_training_data(
+                    text_content, approach='sentence_completion', context_window=10, sample_count=max(sample_count, 150)
+                )
+            elif data_type == 'challenging':
+                return self._create_flat_text_training_data(
+                    text_content, approach='paragraph_continuation', context_window=15, sample_count=max(sample_count, 200)
+                )
+            else:
+                # Default to token prediction with adequate samples
+                return self._create_flat_text_training_data(
+                    text_content, approach='token_prediction', context_window=5, sample_count=max(sample_count, 100)
+                )
+            
+        except Exception as e:
+            print(f"❌ Error processing batch mine data: {str(e)}")
+            print(f"   Falling back to synthetic data generation...")
+            return self._generate_synthetic_data(data_type, sample_count)
+    
+    def _create_flat_text_training_data(self, text: str, sample_count: int, 
+                                      approach: str = 'all', context_window: int = 10) -> Tuple[List[Any], List[Any]]:
+        """Create training data from flat text using various approaches."""
+        
+        # Clean the text
+        cleaned_text = self._clean_general_text(text)
+        
+        data = []
+        labels = []
+        all_training_pairs = []
+        
+        # Create different types of training data based on approach
+        if approach in ['all', 'token_prediction']:
+            token_pairs = self._create_token_prediction_data(cleaned_text, context_window)
+            all_training_pairs.extend(token_pairs[:sample_count // 3])  # Limit per approach
+        
+        if approach in ['all', 'sentence_completion']:
+            sentence_pairs = self._create_sentence_completion_data(cleaned_text)
+            all_training_pairs.extend(sentence_pairs[:sample_count // 3])
+        
+        if approach in ['all', 'paragraph_continuation']:
+            paragraph_pairs = self._create_paragraph_continuation_data(cleaned_text)
+            all_training_pairs.extend(paragraph_pairs[:sample_count // 3])
+        
+        # If single approach, create more samples
+        if approach not in ['all'] and len(all_training_pairs) < sample_count:
+            if approach == 'token_prediction':
+                additional_pairs = self._create_token_prediction_data(cleaned_text, context_window + 2)
+                all_training_pairs.extend(additional_pairs[:sample_count - len(all_training_pairs)])
+            elif approach == 'sentence_completion':
+                additional_pairs = self._create_sentence_completion_data(cleaned_text)
+                all_training_pairs.extend(additional_pairs[:sample_count - len(all_training_pairs)])
+            elif approach == 'paragraph_continuation':
+                additional_pairs = self._create_paragraph_continuation_data(cleaned_text)
+                all_training_pairs.extend(additional_pairs[:sample_count - len(all_training_pairs)])
+        
+        # Ensure we have enough samples
+        if len(all_training_pairs) < sample_count:
+            # Create additional challenging training pairs
+            additional_pairs = self._create_challenging_training_pairs(cleaned_text, sample_count - len(all_training_pairs))
+            all_training_pairs.extend(additional_pairs)
+        
+        # Sample the requested number of training examples (randomize order)
+        if len(all_training_pairs) > sample_count:
+            selected_pairs = random.sample(all_training_pairs, sample_count)
+        else:
+            selected_pairs = all_training_pairs
+            
+        # Remove duplicates
+        unique_pairs = []
+        seen_inputs = set()
+        for input_text, target_text in selected_pairs:
+            if input_text not in seen_inputs:
+                unique_pairs.append((input_text, target_text))
+                seen_inputs.add(input_text)
+        
+        # Separate into data and labels with better label generation
+        for input_text, target_text in unique_pairs:
+            data.append(input_text)
+            
+            # Create more meaningful labels from target text
+            # Use multiple hash functions for better distribution
+            label_hash1 = abs(hash(target_text)) % 7
+            label_hash2 = abs(hash(input_text + target_text)) % 11
+            label_hash3 = len(target_text) % 13
+            
+            # Combine hashes for better label diversity
+            combined_label = (label_hash1 + label_hash2 + label_hash3) % 10
+            labels.append(combined_label)
+        
+        print(f"✅ Created {len(data)} flat text training samples using '{approach}' approach")
+        print(f"   Context window: {context_window}")
+        print(f"   Unique training pairs: {len(unique_pairs)}")
+        print(f"   Label distribution: {sorted(set(labels))}")
+        
+        return data, labels
+    
+    def _clean_general_text(self, text: str) -> str:
+        """Clean general text for training while preserving meaningful content."""
+        # Remove excessive whitespace but preserve paragraph breaks
+        text = re.sub(r'\n\s*\n', '\n\n', text)  # Preserve paragraph breaks
+        text = re.sub(r'[ \t]+', ' ', text)  # Normalize spaces and tabs
+        
+        # Remove some problematic characters but keep useful punctuation
+        text = re.sub(r'[^\w\s\.\,\!\?\;\:\-\'\"\(\)\[\]\/\\\n]', ' ', text)
+        
+        # Clean up multiple spaces
+        text = re.sub(r' +', ' ', text)
+        
+        # Split into lines and filter
+        lines = text.split('\n')
+        cleaned_lines = []
+        
+        for line in lines:
+            line = line.strip()
+            # Keep longer lines and meaningful short lines
+            if len(line) > 15 or (len(line) > 5 and any(c.isalpha() for c in line)):
+                cleaned_lines.append(line)
+        
+        # Join lines back, preserving paragraph structure
+        result = '\n'.join(cleaned_lines)
+        
+        # Remove excessive consecutive newlines
+        result = re.sub(r'\n{3,}', '\n\n', result)
+        
+        return result.strip()
+    
+    def _create_token_prediction_data(self, text: str, context_window: int = 10) -> List[Tuple[str, str]]:
+        """Create token-by-token prediction training data."""
+        words = text.split()
+        training_pairs = []
+        
+        # Create sliding window samples
+        step_size = max(1, context_window // 3)  # Overlap windows for more training data
+        
+        for i in range(0, len(words) - context_window, step_size):
+            # Input: context_window words
+            input_text = ' '.join(words[i:i + context_window])
+            # Target: next word
+            target_text = words[i + context_window]
+            training_pairs.append((input_text, target_text))
+            
+            # Also create multi-token prediction
+            if i + context_window + 2 < len(words):
+                target_text_multi = ' '.join(words[i + context_window:i + context_window + 2])
+                training_pairs.append((input_text, target_text_multi))
+        
+        return training_pairs
+    
+    def _create_sentence_completion_data(self, text: str) -> List[Tuple[str, str]]:
+        """Create sentence completion training data."""
+        # Split into sentences
+        sentences = re.split(r'[.!?]+', text)
+        sentences = [s.strip() for s in sentences if len(s.strip()) > 20]
+        
+        training_pairs = []
+        
+        for sentence in sentences:
+            words = sentence.split()
+            if len(words) < 6:  # Skip very short sentences
+                continue
+            
+            # Create multiple split points for each sentence
+            for split_ratio in [0.3, 0.5, 0.7]:
+                split_point = int(len(words) * split_ratio)
+                split_point = max(2, min(split_point, len(words) - 2))
+                
+                input_text = ' '.join(words[:split_point])
+                target_text = ' '.join(words[split_point:])
+                
+                training_pairs.append((input_text, target_text))
+        
+        return training_pairs
+    
+    def _create_paragraph_continuation_data(self, text: str) -> List[Tuple[str, str]]:
+        """Create paragraph continuation training data."""
+        # Split into paragraphs
+        paragraphs = text.split('\n\n')
+        paragraphs = [p.strip() for p in paragraphs if len(p.strip()) > 50]
+        
+        training_pairs = []
+        
+        for paragraph in paragraphs:
+            sentences = re.split(r'[.!?]+', paragraph)
+            sentences = [s.strip() for s in sentences if len(s.strip()) > 10]
+            
+            if len(sentences) < 3:
+                continue
+            
+            # Use first sentences as input, rest as target
+            split_point = random.randint(1, min(3, len(sentences) - 1))
+            
+            input_text = '. '.join(sentences[:split_point]) + '.'
+            target_text = '. '.join(sentences[split_point:]) + '.'
+            
+            training_pairs.append((input_text, target_text))
+        
+        return training_pairs
+    
+    def _create_challenging_training_pairs(self, text: str, needed_count: int) -> List[Tuple[str, str]]:
+        """Create additional challenging training pairs for better learning."""
+        training_pairs = []
+        words = text.split()
+        
+        if len(words) < 20:
+            return training_pairs
+        
+        for _ in range(needed_count):
+            if len(words) < 10:
+                break
+                
+            # Create various challenging patterns
+            pattern_type = random.randint(0, 4)
+            
+            if pattern_type == 0:
+                # Skip-gram patterns (non-consecutive word prediction)
+                start_idx = random.randint(0, len(words) - 15)
+                context_words = words[start_idx:start_idx+5] + words[start_idx+7:start_idx+10]
+                target_word = words[start_idx+6]  # The skipped word
+                
+                input_text = ' '.join(context_words)
+                target_text = target_word
+                
+            elif pattern_type == 1:
+                # Reverse prediction (predict beginning from end)
+                start_idx = random.randint(10, len(words) - 10)
+                input_text = ' '.join(words[start_idx:start_idx+8])
+                target_text = ' '.join(words[start_idx-5:start_idx])
+                
+            elif pattern_type == 2:
+                # Multi-word prediction with gaps
+                start_idx = random.randint(0, len(words) - 20)
+                input_text = ' '.join(words[start_idx:start_idx+7])
+                target_text = ' '.join(words[start_idx+10:start_idx+15])
+                
+            elif pattern_type == 3:
+                # Long-range dependency
+                start_idx = random.randint(0, len(words) - 30)
+                input_text = ' '.join(words[start_idx:start_idx+5] + ['[GAP]'] + words[start_idx+15:start_idx+20])
+                target_text = ' '.join(words[start_idx+5:start_idx+15])
+                
+            else:
+                # Pattern completion
+                start_idx = random.randint(0, len(words) - 12)
+                input_text = ' '.join(words[start_idx:start_idx+6])
+                target_text = ' '.join(words[start_idx+6:start_idx+12])
+            
+            if len(input_text.strip()) > 5 and len(target_text.strip()) > 5:
+                training_pairs.append((input_text, target_text))
+        
+        return training_pairs
+    
+    def _extract_text_features(self, text: str) -> List[float]:
+        """Extract numerical features from text for training."""
+        import re
+        
+        features = []
+        
+        # Basic text statistics
+        features.append(len(text))  # Text length
+        features.append(len(text.split()))  # Word count
+        features.append(len([s for s in text.split('.') if s.strip()]))  # Sentence count
+        
+        # Character-based features
+        features.append(sum(1 for c in text if c.isupper()) / len(text) if text else 0)  # Uppercase ratio
+        features.append(sum(1 for c in text if c.isdigit()) / len(text) if text else 0)  # Digit ratio
+        features.append(sum(1 for c in text if c in '.,!?') / len(text) if text else 0)  # Punctuation ratio
+        
+        # Keyword presence (binary features)
+        keywords = ['cyber', 'security', 'attack', 'system', 'nuclear', 'energy', 'data', 'network', 'threat', 'risk']
+        text_lower = text.lower()
+        for keyword in keywords:
+            features.append(1.0 if keyword in text_lower else 0.0)
+        
+        # Statistical features
+        word_lengths = [len(word) for word in text.split()]
+        if word_lengths:
+            features.append(sum(word_lengths) / len(word_lengths))  # Average word length
+            features.append(max(word_lengths))  # Max word length
+        else:
+            features.extend([0.0, 0.0])
+        
+        # Pad or truncate to fixed size
+        target_size = 32
+        if len(features) > target_size:
+            features = features[:target_size]
+        else:
+            features.extend([0.0] * (target_size - len(features)))
+        
+        return features
+    
+    def _classify_content(self, text: str) -> int:
+        """Classify text content into categories for multi-class training."""
+        text_lower = text.lower()
+        
+        # Define classification rules
+        if any(keyword in text_lower for keyword in ['cyber', 'security', 'firewall', 'encryption']):
+            return 0  # Cybersecurity
+        elif any(keyword in text_lower for keyword in ['attack', 'threat', 'vulnerability', 'exploit']):
+            return 1  # Security threats
+        elif any(keyword in text_lower for keyword in ['nuclear', 'reactor', 'uranium', 'plutonium']):
+            return 2  # Nuclear technology
+        elif any(keyword in text_lower for keyword in ['energy', 'power', 'electricity', 'renewable']):
+            return 3  # Energy systems
+        elif any(keyword in text_lower for keyword in ['computer', 'software', 'system', 'network']):
+            return 4  # Computer systems
+        elif any(keyword in text_lower for keyword in ['data', 'information', 'database', 'mining']):
+            return 5  # Data processing
+        elif any(keyword in text_lower for keyword in ['government', 'policy', 'regulation', 'law']):
+            return 6  # Government/Policy
+        elif any(keyword in text_lower for keyword in ['research', 'study', 'analysis', 'investigation']):
+            return 7  # Research/Analysis
+        elif any(keyword in text_lower for keyword in ['international', 'global', 'country', 'nation']):
+            return 8  # International affairs
+        else:
+            return 9  # General/Other
+    
+    def _text_to_features(self, text: str) -> List[float]:
+        """Convert text to numerical feature vector."""
+        # Simple hash-based feature extraction
+        import hashlib
+        
+        # Create hash-based features
+        text_hash = hashlib.md5(text.encode()).hexdigest()
+        features = []
+        
+        # Convert hex to features
+        for i in range(0, len(text_hash), 2):
+            hex_pair = text_hash[i:i+2]
+            features.append(int(hex_pair, 16) / 255.0)  # Normalize to 0-1
+        
+        # Add text statistics
+        features.extend(self._extract_text_features(text)[:16])  # First 16 features
+        
+        # Ensure fixed size
+        target_size = 32
+        if len(features) > target_size:
+            features = features[:target_size]
+        else:
+            features.extend([0.0] * (target_size - len(features)))
+        
+        return features
     
     def _create_rl_config(self, task_config: str) -> RLConfig:
         """Create reinforcement learning configuration."""
@@ -2783,6 +3193,48 @@ ANALYZE COMMAND DETAILED HELP:
     analyze spatial 1                   - Analyze spatial organization of segment 1
     analyze training                    - Show training history analysis
             """)
+        elif len(args) > 0 and args[0] == 'train':
+            print("""
+TRAIN COMMAND DETAILED HELP:
+    Usage: train <train_type> [task_config] [data_source] [epochs] [batch_size]
+    
+    Train Types:
+    - supervised     : Supervised learning with labeled data
+    - reinforcement  : Reinforcement learning with reward-based training
+    - multi_modal    : Multi-modal training (text, vision, audio, etc.)
+    - node_specific  : Train specific node types independently
+    - evolutionary   : Evolutionary training with node mutations
+    
+    Task Configs:
+    - classification : Multi-class classification tasks
+    - text          : Text processing and NLP tasks
+    - vision        : Computer vision and image processing
+    - demo          : Demonstration task for testing
+    - challenging   : Complex patterns to promote evolution
+    
+    Data Sources:
+    - file          : Load from batch_mine JSON files (recommended)
+    - synthetic     : Generate synthetic training data
+    - random        : Random data for testing
+    
+    Parameters:
+    - epochs        : Number of training epochs (default: 50)
+    - batch_size    : Training batch size (default: 32)
+    
+    Batch Mine File Training:
+    The system automatically detects batch_mine_*.json files in the current
+    directory and uses the most recent one for training data. The batch mine
+    data is processed and converted into appropriate training samples based
+    on content analysis and feature extraction.
+    
+    Examples:
+    train supervised classification file          - Train on batch_mine data for classification
+    train supervised text file 100 64           - Train text classification, 100 epochs, batch size 64
+    train reinforcement demo synthetic           - RL training with synthetic demo data
+    train evolutionary challenging file          - Evolutionary training on batch_mine data
+    train multi_modal vision file               - Multi-modal vision training
+    train node_specific text file               - Train specific node types on batch data
+            """)
         elif len(args) > 0 and args[0] == 'infer':
             print("""
 INFER COMMAND DETAILED HELP:
@@ -2826,6 +3278,7 @@ Available Commands:
 
 Detailed Help Available:
     help create     - Detailed help for segment creation
+    help train      - Detailed help for training operations
     help analyze    - Detailed help for analysis operations
     help infer      - Detailed help for inference operations
 

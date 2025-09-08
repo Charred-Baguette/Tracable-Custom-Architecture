@@ -147,7 +147,7 @@ class BrainNexus:
         
         # Default configuration for 10-class classification
         default_config = {
-            'type': 'classification',  # 'classification', 'tokens', 'custom'
+            'type': 'tokens',  # 'classification', 'tokens', 'custom'
             'num_classes': 10,
             'class_labels': [f'class_{i}' for i in range(10)],
             'output_format': 'index',  # 'index', 'label', 'token_id', 'probability_dist'
