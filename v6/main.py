@@ -4,7 +4,7 @@ import Nodes.Handler as HandlerNode
 import Nodes.Splitter as SplitterNode
 import Nodes.Reviewer as ReviewerNode
 import Nodes.Processing as ProcessingNode
-
+import Nodes.PreProcessNode as PreProcessNode
 
 class main:
     def __init__(self):
@@ -21,7 +21,7 @@ class main:
         
     def initialize_base_framework(self, dimensions=2, max_x=10):
         # Initialize the preprocess node
-        self.preprocess_node = BaseNode.BaseNode(position=(0,) * dimensions)
+        self.preprocess_node = PreProcessNode.PreProcessNode(position=(0,) * dimensions)
 
         # Initialize Judge Node at origin
         self.judge_node = JudgeNode.JudgeNode(position=(0,) * dimensions)
@@ -59,7 +59,7 @@ class main:
             
             segment = {
                 'index': i,
-                'splitter': SplitterNode.SplitterNode(position=tuple(splitter_pos)),
+                'splitter': SplitterNode.SplitterNode(position=tuple(splitter_pos), nodes_in_segment=[], dimenstions=dimensions, segment_id=i),
                 'processing_nodes': [],
                 'reviewer_node': ReviewerNode.ReviewerNode(position=tuple(reviewer_pos))
             }

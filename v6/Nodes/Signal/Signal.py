@@ -9,12 +9,14 @@ from notes
 """
 
 class Signal:
-    def __init__ (self, position, segment_weight, active_prediction, accumulated_variance, life):
+    def __init__ (self, position, segment_weight, feature_relevance, active_prediction, accumulated_variance, life, input_data):
         self.position = position  # Current position of the signal in the nexus
         self.segment_weight = segment_weight  # Weight assigned to the current segment
+        self.feature_relevance = feature_relevance  # Feature relevance of the signal
         self.active_prediction = active_prediction  # Current prediction value
         self.accumulated_variance = accumulated_variance  # Accumulated variance of the signal
         self.life = life  # Remaining life of the signal
+        self.input_data = input_data  # Placeholder for input data
 
     def identify_next_node(self, connected_nodes):
         # Implement logic to identify the next node for the signal

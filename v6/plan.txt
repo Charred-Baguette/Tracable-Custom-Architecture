@@ -8,6 +8,10 @@ planned architecture:
   ---exam score is goal
   -- determines relevance of different features to find splitter priority (lowest 25% splitters are dropped for current input)
   -- will connect to splitter nodes to begin NN processing
+  -- lightweight prediction to determine both feature relevance (depending on other features) and segment relevance (based on predicted variance of segments)
+  -- can be static model if needed
+  -- for each input features will be ranked based on current input. variance will be predicted for each segment
+  --- allowing for segment pruning and feature weighting in predictions
 
  - splitter : takes data from judge and passes to closest 5% of processing nodes
   -- splitters are divided based on 2d quadrant or 3d octant
