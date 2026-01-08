@@ -1,3 +1,5 @@
+import sys
+LOGGING_ENABLED = '--debug' in sys.argv
 """
 from notes:
 - judge : puts weights on different categories potentially based on category variables : distributes based on top weights
@@ -30,6 +32,8 @@ from .BaseNode import BaseNode
 
 class JudgeNode(BaseNode):
     def __init__(self, position, splitters=None, dataset_features=None, segments=None, learning=False):
+        if LOGGING_ENABLED:
+            print(f'[DEBUG] JudgeNode initialized at position {position}')
         self.position = position
         self.splitters = splitters or []
         self.dataset_features = dataset_features or []  # Feature names

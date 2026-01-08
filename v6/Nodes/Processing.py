@@ -1,3 +1,5 @@
+import sys
+LOGGING_ENABLED = '--debug' in sys.argv
 """
 from notes:
 - processing : takes in some input and applies some kind of weight to it
@@ -8,27 +10,125 @@ from notes:
 """
 
 from .BaseNode import BaseNode
+import numpy as np
 
 class ProcessingNode(BaseNode):
-    def __init__(self, position):
+    def __init__(self, position, reviewer_position=None):
+        if LOGGING_ENABLED:
+            print(f'[DEBUG] ProcessingNode initialized at position {position}')
         self.position = position  # Position in the nexus
         self.signal = None  # Current signal being processed
+        self.weights = {}  # Weights for processing
+        self.neighbors = []  # Neighboring nodes for forwarding
+        self.reviewer_position = reviewer_position
+        
 
+    def create_weights(self, data):
+      if not data:
+          self.weights = {}
+          return
 
-    def process(self, data):
-        # Implement the processing logic for the ProcessingNode
-        pass
+      # Normalize input format
+      if isinstance(data, list):
+          data = {k: v for k, v in data}
+
+      total = sum(abs(v) for v in data.values()) or 1.0
+      self.weights = {k: abs(v) / total for k, v in data.items()}
+
+    def update_weights(self, new_weights):
+        # Update weights by blending with new incoming weights (simple moving average)
+        if not self.weights:
+            self.weights = new_weights.copy()
+            return
+        for k in new_weights:
+            if k in self.weights:
+                self.weights[k] = 0.5 * self.weights[k] + 0.5 * new_weights[k]
+            else:
+                self.weights[k] = new_weights[k]
     
+    def process(self):
+        # Extract input and feature relevance from the signal
+        if not self.signal:
+            return
+        input_data = getattr(self.signal, 'input', None)
+        feature_relevances = getattr(self.signal, 'feature_weights', None)
+        if input_data is None or feature_relevances is None:
+            return
+        # Optionally update weights
+        self.update_weights(feature_relevances)
+        # Apply local model (Bayesian/Gaussian logic)
+        prediction, variance = self.apply_local_model(input_data, feature_relevances)
+        # Update signal variance
+        self.signal.accumulated_variance = getattr(self.signal, 'accumulated_variance', 0) + variance
+        if hasattr(self.signal, 'prediction'):
+            self.signal.prediction = prediction
+        # Forward to a neighbor chosen by custom probability (20% for closest, 10% for next, etc.)
+        if not hasattr(self, 'neighbors'):
+            self.neighbors = []
+        if hasattr(self.signal, 'life') and self.signal.life > 0 and self.neighbors and self.reviewer_position is not None:
+            # Sort neighbors by distance to reviewer
+            neighbors_sorted = sorted(self.neighbors, key=lambda n: np.linalg.norm(np.array(n.position) - np.array(self.reviewer_position)))
+            # Assign custom weights: 20% for closest, 10% for next, 5% for next, 3% for next, 2% for next, 1% for the rest
+            base_weights = [20, 10, 5, 3, 2]
+            weights = []
+            for i in range(len(neighbors_sorted)):
+                if i < len(base_weights):
+                    weights.append(base_weights[i])
+                else:
+                    weights.append(1)
+            # Scale weights to sum to 100
+            total = sum(weights)
+            scaled_weights = [w / total for w in weights]
+            import random
+            chosen_idx = random.choices(range(len(neighbors_sorted)), weights=scaled_weights, k=1)[0]
+            chosen_neighbor = neighbors_sorted[chosen_idx]
+            self.signal.life -= 1
+            if self.signal.life > 0:
+                self.forward_signal(chosen_neighbor)
     def receive_signal(self, signal):
-        # Implement logic to receive and process the signal
+        # Receive and process the signal
         self.signal = signal
+        if not self.weights:
+          self.create_weights(signal.feature_relevance)
+          dist = np.linalg.norm(np.array(signal.position) - np.array(self.position))
+          scale = 1.0 / (1.0 + dist)
+          self.weights = {k: v * scale for k, v in self.weights.items()}
+        self.process()
     
-    def apply_local_model(self, input_data):
-        # Implement logic to apply the local model for prediction and variance
-        pass
+    def apply_local_model(self, input_data, feature_relevances):
+      pred = sum(input_data.get(f, 0) * w for f, w in feature_relevances.items())
+      local_variance = sum(w**2 for w in feature_relevances.values())
+
+      # variance must increase
+      return pred, max(local_variance, 1e-6)
     
     def check_signal_variance(self, variance_threshold):
-        # Implement logic to check and possibly kill the signal based on variance
-        if self.signal and self.signal.accumulated_variance > variance_threshold:
-            self.signal.kill_signal()
+        # Kill the signal if accumulated variance exceeds threshold
+        if self.signal and getattr(self.signal, 'accumulated_variance', 0) > variance_threshold:
+            if hasattr(self.signal, 'kill_signal'):
+                self.signal.kill_signal()
             self.signal = None
+    
+    def forward_signal(self, next_node=None):
+        if not self.signal:
+            return
+        if next_node is not None:
+            # Forward directly to the given node (no clone)
+            next_node.receive_signal(self.signal)
+        self.signal = None
+
+    def compute_neighbors(self, all_nodes, percent=0.05):
+      distances = []
+      for node in all_nodes:
+          if node is self:
+              continue
+          d = np.linalg.norm(
+              np.array(self.position) - np.array(node.position)
+          )
+          distances.append((node, d))
+
+      distances.sort(key=lambda x: x[1])
+      n = max(1, int(len(distances) * percent))
+      self.neighbors = [n for n, _ in distances[:n]]
+    
+    

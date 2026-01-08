@@ -1,3 +1,5 @@
+import sys
+LOGGING_ENABLED = '--debug' in sys.argv
 """
 from notes:
  - splitter : takes data from judge and passes to closest 5% of processing nodes
@@ -14,6 +16,8 @@ from .Signal.Signal import Signal
 
 class SplitterNode(BaseNode):
     def __init__(self, position, nodes_in_segment, dimenstions, segment_id):
+        if LOGGING_ENABLED:
+            print(f'[DEBUG] SplitterNode initialized at position {position}, segment_id={segment_id}')
         self.position = position  # Position in the nexus (likely 1 from origin (1,1) or (-1, -1))
         self.closest_nodes = []  # List of closest nodes for routing
         self.nodes_in_segment = nodes_in_segment  # Nodes in the same segment
@@ -47,8 +51,16 @@ class SplitterNode(BaseNode):
     def process(self, carrier_data):
         # For each node, create a new signal using the carrier data
         segment_relevance, feature_relevance = self.handle_carrier(carrier_data)
+        # Ensure feature_relevance is a dict
+        if isinstance(feature_relevance, list):
+            # Convert list of tuples to dict
+            feature_relevance = dict(feature_relevance)
         created_signals = []
         for i in self.closest_nodes:
+            input_data = carrier_data.get('input_data', None)
+            # Convert numpy array to dict if needed
+            if isinstance(input_data, np.ndarray):
+                input_data = {str(idx): val for idx, val in enumerate(input_data)}
             signal = Signal(
                 position=self.position,
                 segment_weight=segment_relevance,
@@ -56,7 +68,7 @@ class SplitterNode(BaseNode):
                 active_prediction=None,
                 accumulated_variance=0.0,
                 life=10,  # Arbitrary initial life value
-                input_data=carrier_data.get('input_data', None)
+                input_data=input_data
             )
             created_signals.append(signal)
             i.receive_signal(signal)
