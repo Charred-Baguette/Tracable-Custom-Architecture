@@ -180,3 +180,12 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 v7.2/logs.txt
+*.png
+/v10 analysis/.vscode
+/v10 analysis/logs
+/v10/.claude
+/v11/.claude
+/v8/.vscode
+/v9/.vscode
+/v10/.vscode
+/v11/.vscode
