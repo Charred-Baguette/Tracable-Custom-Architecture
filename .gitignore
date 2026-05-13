@@ -189,3 +189,6 @@ v7.2/logs.txt
 /v9/.vscode
 /v10/.vscode
 /v11/.vscode
+/.vscode
+/.vscode
+.vscode/settings.json
