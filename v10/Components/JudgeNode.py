@@ -1,21 +1,23 @@
 import random
 import math
 import numpy as np
+import Logger
 import matplotlib.pyplot as plt
 from sklearn.decomposition import PCA
 
 class JudgeNode:
-    def __init__(self, ignored_features=None, Logger=None, classification=None):
+    def __init__(self, ignored_features=None, logger=None, classification=None, target=None):
         self.segments = []
         self.segment_weights = {
             'segment': [],
             'clusters': [],
         }
-        self.Logger = Logger  # To be assigned externally
+        self.Logger = logger  if logger else Logger.Logger('JudgeNode.log', 4)
         self.classification = classification
         self.ignored_features = ignored_features if ignored_features else []
         self.features = []
         self.mode = "" # special modes can be assigned later
+        self.target = target
 
     def display(self, message, Loud):
         message = f"[JudgeNode]: {message}"
@@ -84,60 +86,58 @@ class JudgeNode:
             for i, c in enumerate(centroids)
         ]
 
-    def cluster_create(self, cetroid, points):
-        
-        cluster = {
-            'centroid': cetroid,
-            'points': points,
-           
+    def cluster_create(self, centroid: list, points: list) -> dict:
+        return {
+            'centroid':   centroid,
+            'points':     points,
+            'segment_id': None,
         }
-        return cluster
     
-    def calculate_input_segment_relevance(self, input_vectorized, Loud):
-        relevance_scores = {
+    def calculate_input_segment_relevance(self, input_vectorized, Loud: bool = False) -> dict:
+        relevance_scores: dict[str, list] = {
             'clusters': [],
             'scores': []
         }
+        input_filtered = self.filter_features(input_vectorized)
         if not self.segment_weights['clusters']:
             self.display("No clusters available for relevance calculation. Using default override with all segments of relevance 1", Loud)
-            for segment in self.segments:
-                relevance_scores['clusters'].append(segment)
+            for sid in self.segment_weights['segment']:
+                relevance_scores['clusters'].append({'segment_id': sid, 'centroid': [], 'points': []})
                 relevance_scores['scores'].append(1.0)
+            return relevance_scores
         for cluster in self.segment_weights['clusters']:
             centroid = cluster['centroid']
-            distance = self.euclidean_distance(input_vectorized, centroid)
-            relevance = 1 / (1 + distance)  # Example relevance calculation
+            distance = self.euclidean_distance(input_filtered, centroid)
+            relevance = 1 / (1 + distance)
             relevance_scores['clusters'].append(cluster)
             relevance_scores['scores'].append(relevance)
         return relevance_scores
     
-    def find_relevant_segments(self, relevance_scores, selection_percentage=.5, Loud = False):
+    def find_relevant_segments(self, relevance_scores: dict, selection_percentage: float = 0.5, Loud: bool = False) -> list[tuple[int, float]]:
+        if not relevance_scores['scores']:
+            self.display("No relevant segments found. Using all segments as fallback.", Loud=Loud)
+            return [(sid, 1.0) for sid in self.segment_weights['segment']]
+
         amount_to_select = max(1, int(len(relevance_scores['scores']) * selection_percentage))
         scored_clusters = list(zip(relevance_scores['clusters'], relevance_scores['scores']))
         scored_clusters.sort(key=lambda x: x[1], reverse=True)
         selected_clusters = scored_clusters[:amount_to_select]
-        selected_segments = []
-        if not selected_clusters:
-            self.display("No relevant segments found. Using all segments as fallback.", Loud=Loud)
-            for segment in self.segments:
-                selected_segments.append(segment)
-            return selected_segments
+
+        # Aggregate by segment_id, keeping highest score per segment
+        segment_scores: dict[int, float] = {}
         for cluster, score in selected_clusters:
-            # if cluster has no points, handle based on mode
-            try:
-                selected_segments.extend(cluster['points'])
-                
-            except KeyError:
-                self.display("Cluster has no points. Either empty cluster or data issue.", Loud=Loud)
-                if self.mode == "demo":
-                    self.display("Demo mode active: adding selected cluster without points.", Loud=Loud)
-                    selected_segments.append(cluster)
-                else:
-                    raise ValueError("Cluster has no points. Cannot proceed.")
-            except Exception as e:
-                self.display(f"Unexpected error accessing cluster points: {e}", Loud=Loud)
-                raise e
-        return selected_segments
+            sid = cluster.get('segment_id')
+            if sid is None:
+                self.display("Cluster has no assigned segment_id. Skipping.", Loud=Loud)
+                continue
+            if sid not in segment_scores or score > segment_scores[sid]:
+                segment_scores[sid] = score
+
+        if not segment_scores:
+            self.display("No valid segment assignments found. Using all segments as fallback.", Loud=Loud)
+            return [(sid, 1.0) for sid in self.segment_weights['segment']]
+
+        return list(segment_scores.items())
     
     def geometric_uniqueness(self, cluster, all_clusters, eps=1e-6):
         centroid = self.filter_features(cluster['centroid'])
@@ -221,24 +221,39 @@ class JudgeNode:
 
 
 
-    def assign_clusters_to_segments(self, clusters):
-        if not self.segments:
-            raise ValueError("Segments must exist before assignment.")
+    def assign_clusters_to_segments(self, segments: list) -> None:
+        if not segments:
+            raise ValueError("Segments list is empty.")
 
-        for segment in self.segments:
-            segment['clusters'] = []
+        self.segment_weights['segment'] = [s.segment_id for s in segments]
+        clusters = self.segment_weights['clusters']
+        n_seg = len(segments)
 
-        for cluster in clusters:
-            centroid = cluster['centroid']
-            distances = [
-                self.euclidean_distance(
-                    self.filter_features(centroid),
-                    self.filter_features(segment['centroid'])
-                )
-                for segment in self.segments
-            ]
-            assigned_segment = self.segments[distances.index(min(distances))]
-            assigned_segment['clusters'].append(cluster)
+        # Group similar clusters by running k-means on cluster centroids
+        cluster_centroids = [self.filter_features(c['centroid']) for c in clusters]
+
+        step = max(1, len(clusters) // n_seg)
+        meta_centroids = [cluster_centroids[min(i * step, len(clusters) - 1)] for i in range(n_seg)]
+
+        groups: dict[int, list[int]] = {i: [] for i in range(n_seg)}
+        for _ in range(10):
+            groups = {i: [] for i in range(n_seg)}
+            for ci, cc in enumerate(cluster_centroids):
+                distances = [self.euclidean_distance(cc, mc) for mc in meta_centroids]
+                groups[distances.index(min(distances))].append(ci)
+
+            for i in range(n_seg):
+                if not groups[i]:
+                    continue
+                dim = len(cluster_centroids[groups[i][0]])
+                meta_centroids[i] = [
+                    sum(cluster_centroids[j][d] for j in groups[i]) / len(groups[i])
+                    for d in range(dim)
+                ]
+
+        for i in range(n_seg):
+            for ci in groups[i]:
+                clusters[ci]['segment_id'] = segments[i].segment_id
     
     def calculate_cluster_scoring(
         self,
@@ -283,17 +298,18 @@ class JudgeNode:
             })
         return summary
 
-    def train(self, preprocessed_dataset, iterations):
+    def train(self, preprocessed_dataset, iterations: int, segments: list | None = None):
         dataset_vectors = [
             list(data_point.values())
             for data_point in preprocessed_dataset.to_dict(orient='records')
         ]
         scores = []
-        min_clusters = len(self.segments)
-        max_clusters = len(self.segments) * 5
+        seg_count = len(segments) if segments is not None else 1
+        min_clusters = seg_count
+        max_clusters = seg_count * 5
         for i in range(iterations):
             self.display(f"Training iteration {i+1}/{iterations}", True)
-            cluster_count = min_clusters + (i*len(self.segments)) # increase cluster count each iteration based on amount of segments
+            cluster_count = min_clusters + (i * seg_count) # increase cluster count each iteration based on amount of segments
             if cluster_count > max_clusters:
                 break
             self.generate_clusters(dataset_vectors, cluster_count)
@@ -330,6 +346,8 @@ class JudgeNode:
                 )
         self.display("Generating final clusters based on optimal cluster count...", True)
         self.generate_clusters(dataset_vectors, best['cluster_count'])
+        if segments is not None:
+            self.assign_clusters_to_segments(segments)
         
 
 def plot_clusters_2d(clusters):

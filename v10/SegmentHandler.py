@@ -29,16 +29,24 @@ class SegmentHandler:
             classification = self.classification
         self.logger.log(message, classification, Loud)
 
-    def initializeSegment(self):
+    def initializeSegment(self, loc = []): #loc used to determine if x or y is positive or negative
         if self.max_x is None:
             raise ValueError("max_x must be defined to create segments.")
         if self.logger is None:
             raise ValueError("Logger must be provided to create segments.")
 
+        if len(loc) != self.dimensions and len(loc) != 0:
+            raise ValueError(f"loc must have length {self.dimensions} to determine axis signs in {self.dimensions}D space")
+
+        def apply_loc(pos: tuple) -> tuple:
+            if not loc:
+                return pos
+            return tuple(int(coord * sign) for coord, sign in zip(pos, loc))
+
         has_progress = hasattr(self.logger, 'make_progress')
 
-        splitter_position = tuple(1 for _ in range(self.dimensions))
-        reviewer_position = tuple(self.max_x for _ in range(self.dimensions))
+        splitter_position = apply_loc(tuple(1 for _ in range(self.dimensions)))
+        reviewer_position = apply_loc(tuple(self.max_x for _ in range(self.dimensions)))
 
         splitter = SplitterNode(position=splitter_position, connection_percentage=self.connection_percentage, Logger=self.logger, classification=self.classification)
 
@@ -47,12 +55,12 @@ class SegmentHandler:
         if self.dimensions == 2:
             r = self.max_x
             reviewer_positions = [
-                (r, 0),
-                (int(round(r * math.cos(math.pi / 4))), int(round(r * math.sin(math.pi / 4)))),
-                (0, r),
+                apply_loc((r, 0)),
+                apply_loc((int(round(r * math.cos(math.pi / 4))), int(round(r * math.sin(math.pi / 4))))),
+                apply_loc((0, r)),
             ]
         else:
-            reviewer_positions = [pos for pos in itertools.product([0, self.max_x], repeat=self.dimensions) if any(c == self.max_x for c in pos)]
+            reviewer_positions = [apply_loc(pos) for pos in itertools.product([0, self.max_x], repeat=self.dimensions) if any(c == self.max_x for c in pos)]
         reviewer = [ReviewerNode(position=pos, Logger=self.logger, classification=self.classification) for pos in reviewer_positions]
 
         self.segmentComponents = {
@@ -100,6 +108,7 @@ class SegmentHandler:
                 return positions, breaks
 
         node_positions, breaks = calculate_node_positions(num_nodes, self.dimensions, self.max_x)
+        node_positions = [apply_loc(pos) for pos in node_positions]
         self.display(f"Calculated {len(node_positions)} unique node positions with {breaks} breaks to avoid duplicates.", self.classification, True)
 
         def _create_nodes():
