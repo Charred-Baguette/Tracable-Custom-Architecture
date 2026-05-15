@@ -118,26 +118,24 @@ class JudgeNode:
             self.display("No relevant segments found. Using all segments as fallback.", Loud=Loud)
             return [(sid, 1.0) for sid in self.segment_weights['segment']]
 
-        amount_to_select = max(1, int(len(relevance_scores['scores']) * selection_percentage))
-        scored_clusters = list(zip(relevance_scores['clusters'], relevance_scores['scores']))
-        scored_clusters.sort(key=lambda x: x[1], reverse=True)
-        selected_clusters = scored_clusters[:amount_to_select]
-
-        # Aggregate by segment_id, keeping highest score per segment
-        segment_scores: dict[int, float] = {}
-        for cluster, score in selected_clusters:
+        # Aggregate to segment level: best (max) cluster score per segment
+        segment_best: dict[int, float] = {}
+        for cluster, score in zip(relevance_scores['clusters'], relevance_scores['scores']):
             sid = cluster.get('segment_id')
             if sid is None:
                 self.display("Cluster has no assigned segment_id. Skipping.", Loud=Loud)
                 continue
-            if sid not in segment_scores or score > segment_scores[sid]:
-                segment_scores[sid] = score
+            if sid not in segment_best or score > segment_best[sid]:
+                segment_best[sid] = score
 
-        if not segment_scores:
+        if not segment_best:
             self.display("No valid segment assignments found. Using all segments as fallback.", Loud=Loud)
             return [(sid, 1.0) for sid in self.segment_weights['segment']]
 
-        return list(segment_scores.items())
+        # Select top selection_percentage of SEGMENTS (not clusters)
+        sorted_segs = sorted(segment_best.items(), key=lambda x: x[1], reverse=True)
+        n_select = max(1, math.ceil(len(sorted_segs) * selection_percentage))
+        return sorted_segs[:n_select]
     
     def geometric_uniqueness(self, cluster, all_clusters, eps=1e-6):
         centroid = self.filter_features(cluster['centroid'])
@@ -173,87 +171,81 @@ class JudgeNode:
         return nearest / (radius + eps)
 
     def behavioral_diversity(self, cluster, all_clusters, dataset):
-        def response(cluster, point):
-            return 1 / (
-                1 + self.euclidean_distance(
-                    self.filter_features(point),
-                    self.filter_features(cluster['centroid'])
-                )
-            )
+        if not dataset:
+            return 0.0
+
+        X = np.array([self.filter_features(p) for p in dataset], dtype=float)
+        c1 = np.array(self.filter_features(cluster['centroid']), dtype=float)
+        r1 = 1.0 / (1.0 + np.linalg.norm(X - c1, axis=1))
 
         diffs = []
-
         for other in all_clusters:
             if other is cluster:
                 continue
+            c2 = np.array(self.filter_features(other['centroid']), dtype=float)
+            r2 = 1.0 / (1.0 + np.linalg.norm(X - c2, axis=1))
+            diffs.append(float(np.mean(np.abs(r1 - r2))))
 
-            total_diff = 0.0
-            for p in dataset:
-                total_diff += abs(
-                    response(cluster, p) - response(other, p)
-                )
+        return sum(diffs) / len(diffs) if diffs else 0.0
 
-            diffs.append(total_diff / len(dataset))
-
-        if not diffs:
-            return 0.0
-
-        return sum(diffs) / len(diffs)
-    
     def information_gain(self, cluster, dataset):
         if not dataset:
             return 0.0
 
         size_factor = len(cluster['points']) / len(dataset)
-
-        relevance_sum = 0.0
-        for p in dataset:
-            relevance_sum += 1 / (
-                1 + self.euclidean_distance(
-                    self.filter_features(p),
-                    self.filter_features(cluster['centroid'])
-                )
-            )
-
-        mean_relevance = relevance_sum / len(dataset)
+        X = np.array([self.filter_features(p) for p in dataset], dtype=float)
+        c = np.array(self.filter_features(cluster['centroid']), dtype=float)
+        mean_relevance = float(np.mean(1.0 / (1.0 + np.linalg.norm(X - c, axis=1))))
 
         return size_factor * mean_relevance
 
 
 
-    def assign_clusters_to_segments(self, segments: list) -> None:
+    def assign_clusters_to_segments(self, segments: list, balance_weight: float = 1.0) -> None:
         if not segments:
             raise ValueError("Segments list is empty.")
 
         self.segment_weights['segment'] = [s.segment_id for s in segments]
         clusters = self.segment_weights['clusters']
-        n_seg = len(segments)
 
-        # Group similar clusters by running k-means on cluster centroids
-        cluster_centroids = [self.filter_features(c['centroid']) for c in clusters]
+        total_samples = sum(len(c['points']) for c in clusters)
+        target_per_seg = total_samples / len(segments)
+        centroids_f = [self.filter_features(c['centroid']) for c in clusters]
 
-        step = max(1, len(clusters) // n_seg)
-        meta_centroids = [cluster_centroids[min(i * step, len(clusters) - 1)] for i in range(n_seg)]
+        # Normalisation factor for centroid distances
+        all_dists = [
+            self.euclidean_distance(centroids_f[i], centroids_f[j])
+            for i in range(len(centroids_f))
+            for j in range(i + 1, len(centroids_f))
+        ]
+        max_dist = max(all_dists) if all_dists else 1.0
 
-        groups: dict[int, list[int]] = {i: [] for i in range(n_seg)}
-        for _ in range(10):
-            groups = {i: [] for i in range(n_seg)}
-            for ci, cc in enumerate(cluster_centroids):
-                distances = [self.euclidean_distance(cc, mc) for mc in meta_centroids]
-                groups[distances.index(min(distances))].append(ci)
-
-            for i in range(n_seg):
-                if not groups[i]:
-                    continue
-                dim = len(cluster_centroids[groups[i][0]])
-                meta_centroids[i] = [
-                    sum(cluster_centroids[j][d] for j in groups[i]) / len(groups[i])
-                    for d in range(dim)
-                ]
-
-        for i in range(n_seg):
-            for ci in groups[i]:
-                clusters[ci]['segment_id'] = segments[i].segment_id
+        # Greedy assignment: largest clusters first so balance is easiest to achieve
+        seg_state = {seg.segment_id: {'centroid': None, 'samples': 0} for seg in segments}
+        for ci in sorted(range(len(clusters)), key=lambda x: len(clusters[x]['points']), reverse=True):
+            c_centroid = centroids_f[ci]
+            n_c = len(clusters[ci]['points'])
+            best_sid, best_score = None, float('inf')
+            for seg in segments:
+                sid = seg.segment_id
+                state = seg_state[sid]
+                dist = (
+                    self.euclidean_distance(c_centroid, state['centroid']) / max_dist
+                    if state['centroid'] is not None else 0.0
+                )
+                excess_ratio = max(0.0, state['samples'] - target_per_seg) / (target_per_seg + 1e-9)
+                score = dist + balance_weight * excess_ratio
+                if score < best_score:
+                    best_score, best_sid = score, sid
+            clusters[ci]['segment_id'] = best_sid
+            state = seg_state[best_sid]
+            n_old = state['samples']
+            n_total = n_old + n_c
+            state['centroid'] = (
+                list(c_centroid) if state['centroid'] is None
+                else [(o * n_old + n * n_c) / n_total for o, n in zip(state['centroid'], c_centroid)]
+            )
+            state['samples'] = n_total
     
     def calculate_cluster_scoring(
         self,
@@ -298,33 +290,45 @@ class JudgeNode:
             })
         return summary
 
-    def train(self, preprocessed_dataset, iterations: int, segments: list | None = None):
+    def train(self, preprocessed_dataset, iterations: int, segments: list | None = None,
+              min_clusters: int | None = None, max_clusters: int | None = None):
         dataset_vectors = [
             list(data_point.values())
             for data_point in preprocessed_dataset.to_dict(orient='records')
         ]
         scores = []
         seg_count = len(segments) if segments is not None else 1
-        min_clusters = seg_count
-        max_clusters = seg_count * 5
+        _min = min_clusters if min_clusters is not None else seg_count
+        _max = max_clusters if max_clusters is not None else seg_count * 5
         for i in range(iterations):
-            self.display(f"Training iteration {i+1}/{iterations}", True)
-            cluster_count = min_clusters + (i * seg_count) # increase cluster count each iteration based on amount of segments
-            if cluster_count > max_clusters:
+            cluster_count = _min + i  # increment by 1 each iteration
+            if cluster_count > _max:
                 break
+            self.display(f"Training iteration {i+1} | clusters={cluster_count}", True)
             self.generate_clusters(dataset_vectors, cluster_count)
             scored_clusters = self.calculate_cluster_scoring(dataset_vectors)
 
+            # Balance bonus: reward even distribution across clusters
+            sizes = [len(c['points']) for c in scored_clusters]
+            mean_sz = sum(sizes) / len(sizes)
+            std_sz = math.sqrt(sum((s - mean_sz) ** 2 for s in sizes) / len(sizes))
+            cv = std_sz / (mean_sz + 1e-9)
+            balance_bonus = 1.0 / (1.0 + cv)
+            raw_score = sum(c['metrics']['ClusterScore'] for c in scored_clusters) / len(scored_clusters)
+            combined_score = raw_score * (1.0 + balance_bonus)
+
             scores.append({
                 "cluster_count": cluster_count,
-                "avg_score": sum(c['metrics']['ClusterScore'] for c in scored_clusters) / len(scored_clusters),
+                "avg_score": combined_score,
+                "raw_score": raw_score,
+                "balance_bonus": balance_bonus,
                 "summary": self.summarize_clusters(scored_clusters)
             })
         scores.sort(key=lambda x: x["avg_score"], reverse=True)
 
         best = scores[0]
         self.display(
-            f"Optimal clusters: {best['cluster_count']} | score={best['avg_score']:.4f}",
+            f"Optimal clusters: {best['cluster_count']} | score={best['avg_score']:.4f} (raw={best['raw_score']:.4f}, balance={best['balance_bonus']:.4f})",
             True
         )
         self.display("Cluster summaries:", True)
@@ -336,7 +340,7 @@ class JudgeNode:
         self.display("Summary for each cluster amount:", True)
         for s in scores:
             self.display(
-                f"Clusters: {s['cluster_count']} | Avg ClusterScore: {s['avg_score']:.4f}",
+                f"Clusters: {s['cluster_count']} | Avg ClusterScore: {s['avg_score']:.4f} (raw={s['raw_score']:.4f}, balance={s['balance_bonus']:.4f})",
                 True
             )
             for c in s['summary']:

@@ -192,3 +192,6 @@ v7.2/logs.txt
 /.vscode
 /.vscode
 .vscode/settings.json
+*.nexseg
+*.nexseg
+*.nexseg

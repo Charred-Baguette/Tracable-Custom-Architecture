@@ -44,7 +44,8 @@ class SystemHandler:
 
         self.display(f"Initialized {segmentCount} segments", Loud=Loud)
 
-    def train(self, dataset, epoch_count: int = 5, judge_iterations: int = 10, loud: bool = True) -> None:
+    def train(self, dataset, epoch_count: int = 5, judge_iterations: int = 10, loud: bool = True,
+              judge_min_clusters: int | None = None, judge_max_clusters: int | None = None) -> None:
         from collections import defaultdict
         if not self.segments:
             raise ValueError("Segments must be initialized before training. Call initializeAllSegments() first.")
@@ -57,7 +58,8 @@ class SystemHandler:
         self.display("Training JudgeNode — clustering full dataset...", Loud=loud)
         preprocessed = self.preprocessor.process_dataset(dataset.copy())
         judge_input = preprocessed.drop(columns=[self.target], errors='ignore')
-        self.JudgeNode.train(judge_input, judge_iterations, segments=self.segments)
+        self.JudgeNode.train(judge_input, judge_iterations, segments=self.segments,
+                             min_clusters=judge_min_clusters, max_clusters=judge_max_clusters)
 
         # Step 2: Map each cluster's points back to original dataset row indices.
         # Use the same target-dropped view for the lookup so tuple keys match cluster points.
@@ -134,14 +136,16 @@ if __name__ == "__main__":
     from rich.panel import Panel
     from rich import box
 
-    DATASET_CSV    = "Exam_Score_Prediction.csv"
-    TARGET_COL     = "exam_score"
-    EPOCH_COUNT    = 20
-    JUDGE_ITERS    = 20
-    MAX_X          = 10
-    DIMENSIONS     = 2
-    CONN_PCT       = 0.1
-    DENSITY        = 0.8
+    DATASET_CSV        = "Exam_Score_Prediction.csv"
+    TARGET_COL         = "exam_score"
+    EPOCH_COUNT        = 20
+    JUDGE_ITERS        = 20
+    JUDGE_MIN_CLUSTERS = 4    # minimum cluster count during JudgeNode training
+    JUDGE_MAX_CLUSTERS = 20   # maximum cluster count during JudgeNode training
+    MAX_X              = 10
+    DIMENSIONS         = 2
+    CONN_PCT           = 0.1
+    DENSITY            = 0.8
 
     # Per-segment colours for the combined graph
     SEG_COLORS = ["steelblue", "tomato", "mediumseagreen", "darkorchid",
@@ -245,7 +249,8 @@ if __name__ == "__main__":
 
     # ── Train ─────────────────────────────────────────────────────────────
     logger.console.print(Rule("[bold green]Training[/bold green]"))
-    system.train(dataset, epoch_count=EPOCH_COUNT, judge_iterations=JUDGE_ITERS, loud=True)
+    system.train(dataset, epoch_count=EPOCH_COUNT, judge_iterations=JUDGE_ITERS, loud=True,
+                 judge_min_clusters=JUDGE_MIN_CLUSTERS, judge_max_clusters=JUDGE_MAX_CLUSTERS)
 
     # ── Post-train graph ──────────────────────────────────────────────────
     logger.console.print(Rule("[bold yellow]Post-Training Graph[/bold yellow]"))
