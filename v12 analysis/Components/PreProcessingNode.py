@@ -1,11 +1,11 @@
 import pandas as pd
 
 class PreProcesingNode:
-    def __init__(self, Logger, logger_classification):
+    def __init__(self, Logger, logger_classification, removable_columns=None):
         self.data = []
         self.Logger = Logger
         self.classification = logger_classification  
-        self.removable_columns = ['student_id']  # Example of a column that might be removed during preprocessing
+        self.removable_columns = removable_columns if removable_columns is not None else []  # Example of a column that might be removed during preprocessing
 
         self._cat_vocab = {}          
         self._all_columns = set() 
@@ -20,6 +20,8 @@ class PreProcesingNode:
 
     def process_data(self, input_data):
         data = input_data.copy()
+        data = self.drop_removable_columns(data)
+        data = self.handle_missing_values(data)
         data = self.tokenize_categorical(data)
         self.normalize_numerical(data)
         self.data.append(data) # For processing datasets or learning
@@ -32,11 +34,9 @@ class PreProcesingNode:
             dataset = pd.read_csv(dataset)
         else:
             raise TypeError("dataset must be either a pandas DataFrame or a filepath string")
-        data = self.drop_removable_columns(dataset)
-        data = self.handle_missing_values(data)
         with self.Logger.make_progress(transient=True) as progress:
-            task = progress.add_task("Pre-processing dataset", total=len(data))
-            for _, row in data.iterrows():
+            task = progress.add_task("Pre-processing dataset", total=len(dataset))
+            for _, row in dataset.iterrows():
                 self.process_data(row)
                 progress.update(task, advance=1)
         self.display("Pre-processing complete.", 4)

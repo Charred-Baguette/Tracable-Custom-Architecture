@@ -19,11 +19,11 @@ class JudgeNode:
         self.mode = "" # special modes can be assigned later
         self.target = target
 
-    def display(self, message, Loud):
+    def display(self, message, Loud, classification=None):
         message = f"[JudgeNode]: {message}"
         if self.Logger is None:
             raise ValueError("Logger not assigned")
-        self.Logger.log(message, self.classification, Loud)
+        self.Logger.log(message, classification if classification is not None else self.classification, Loud)
 
     def filter_features(self, vector):
         """
@@ -54,11 +54,13 @@ class JudgeNode:
         # Initialize centroids randomly
         centroids = random.sample(dataset, cluster_count)
 
-        for _ in range(3):
+        # Run up to 100 iterations; stop early when no centroid moves more than tol.
+        _KMEANS_MAX_ITER = 100
+        _KMEANS_TOL = 1e-6
+        for _ in range(_KMEANS_MAX_ITER):
             clusters = {i: [] for i in range(cluster_count)}
 
             for point in dataset:
-                
                 point_f = self.filter_features(point)
                 distances = [
                     self.euclidean_distance(point_f, self.filter_features(c))
@@ -79,7 +81,16 @@ class JudgeNode:
                 ]
                 new_centroids.append(centroid)
 
+            # Early stop: all centroids stationary within tolerance
+            max_shift = max(
+                self.euclidean_distance(
+                    self.filter_features(old), self.filter_features(new)
+                )
+                for old, new in zip(centroids, new_centroids)
+            )
             centroids = new_centroids
+            if max_shift < _KMEANS_TOL:
+                break
 
         self.segment_weights['clusters'] = [
             self.cluster_create(c, clusters[i])
@@ -98,7 +109,19 @@ class JudgeNode:
             'clusters': [],
             'scores': []
         }
-        input_filtered = self.filter_features(input_vectorized)
+        # If we have stored feature column names from training, extract values in
+        # that exact order so distances align with the cluster centroid dimensions.
+        # Without this, tokenize_categorical's dict ordering (categorical features
+        # grouped first, then numerical) can differ from the DataFrame column order
+        # used to build centroids, causing completely wrong routing.
+        if self.features and isinstance(input_vectorized, dict):
+            input_filtered = [
+                input_vectorized.get(f, 0.0)
+                for f in self.features
+                if f not in self.ignored_features
+            ]
+        else:
+            input_filtered = self.filter_features(input_vectorized)
         if not self.segment_weights['clusters']:
             self.display("No clusters available for relevance calculation. Using default override with all segments of relevance 1", Loud)
             for sid in self.segment_weights['segment']:
@@ -292,6 +315,9 @@ class JudgeNode:
 
     def train(self, preprocessed_dataset, iterations: int, segments: list | None = None,
               min_clusters: int | None = None, max_clusters: int | None = None):
+        # Store column order so calculate_input_segment_relevance can extract
+        # inference dict values in the same dimension order as these training vectors.
+        self.features = list(preprocessed_dataset.columns)
         dataset_vectors = [
             list(data_point.values())
             for data_point in preprocessed_dataset.to_dict(orient='records')
@@ -304,7 +330,7 @@ class JudgeNode:
             cluster_count = _min + i  # increment by 1 each iteration
             if cluster_count > _max:
                 break
-            self.display(f"Training iteration {i+1} | clusters={cluster_count}", True)
+            self.display(f"Iteration {i+1}/{min(iterations, _max - _min + 1)} | clusters={cluster_count} ...", True, classification=1)
             self.generate_clusters(dataset_vectors, cluster_count)
             scored_clusters = self.calculate_cluster_scoring(dataset_vectors)
 
@@ -316,6 +342,7 @@ class JudgeNode:
             balance_bonus = 1.0 / (1.0 + cv)
             raw_score = sum(c['metrics']['ClusterScore'] for c in scored_clusters) / len(scored_clusters)
             combined_score = raw_score * (1.0 + balance_bonus)
+            self.display(f"  -> score={combined_score:.4f} (raw={raw_score:.4f}, balance_bonus={balance_bonus:.4f})", True, classification=1)
 
             scores.append({
                 "cluster_count": cluster_count,
@@ -329,7 +356,7 @@ class JudgeNode:
         best = scores[0]
         self.display(
             f"Optimal clusters: {best['cluster_count']} | score={best['avg_score']:.4f} (raw={best['raw_score']:.4f}, balance={best['balance_bonus']:.4f})",
-            True
+            True, classification=1
         )
         self.display("Cluster summaries:", True)
         for c in best['summary']:
@@ -348,7 +375,7 @@ class JudgeNode:
                     f"  Cluster {c['cluster']}: size={c['size']} | GeometricUniqueness={c['GeometricUniqueness']:.4f} | BehavioralDiversity={c['BehavioralDiversity']:.4f} | InformationGain={c['InformationGain']:.4f} | ClusterScore={c['ClusterScore']:.4f}",
                     True
                 )
-        self.display("Generating final clusters based on optimal cluster count...", True)
+        self.display("Generating final clusters based on optimal cluster count...", True, classification=1)
         self.generate_clusters(dataset_vectors, best['cluster_count'])
         self.calculate_cluster_scoring(dataset_vectors)
         if segments is not None:

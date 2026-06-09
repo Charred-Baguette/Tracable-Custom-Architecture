@@ -48,14 +48,16 @@ class ProcessingNode:
     def initialize_weights(self, input_data):
         # Scale initial weight by 1/num_features so weighted_sum starts at a
         # reasonable magnitude regardless of how many features exist.
+        # Small random perturbation breaks the initial symmetry between nodes
+        # so they differentiate faster during early training.
         n = max(len(input_data), 1)
         init_w = 1.0 / n
         for feature in input_data:
-            self.weights[feature] = init_w
+            self.weights[feature] = init_w + random.uniform(-0.01, 0.01)
 
         # input_prediction weight kept small to dampen the feedback loop
         # (prediction gets multiplied by this and re-added every node)
-        self.weights['input_prediction'] = init_w
+        self.weights['input_prediction'] = init_w + random.uniform(-0.01, 0.01)
 
     def receive_signal(self, signal):
         if self.signal is None:
@@ -93,7 +95,7 @@ class ProcessingNode:
 
         # Honour connection_percentage but never go below MIN_CONNECTIONS,
         # capped at the number of available candidates.
-        target_count = max(self.MIN_CONNECTIONS, int(math.ceil(connection_percentage * 50)))
+        target_count = max(self.MIN_CONNECTIONS, int(math.ceil(connection_percentage * len(candidates))))
         target_count = min(target_count, len(candidates))
         selected = [node for node, _ in distances[:target_count]]
 
@@ -141,17 +143,20 @@ class ProcessingNode:
         self_norm   = [p / origin_dist for p in self.position]   # unit vec pointing outward
 
         REVIEWER_BONUS = 3.0   # reviewers are preferred terminal targets
+        WEIGHT_FLOOR   = 1e-3  # minimum routing weight — nodes near the origin
+                               # still get a non-zero chance so random.choices
+                               # never sees an all-zero weight vector
 
         def _weight(node):
             # Reviewer nodes skip the alignment penalty so all reviewers remain
             # equally reachable regardless of their direction from this node.
             if hasattr(node, 'review_signals'):
-                return node.distance_to_origin * REVIEWER_BONUS
+                return max(WEIGHT_FLOOR, node.distance_to_origin * REVIEWER_BONUS)
             move = [b - a for a, b in zip(self.position, node.position)]
             move_len = math.sqrt(sum(v * v for v in move)) + 1e-9
             alignment = sum(s * m / move_len for s, m in zip(self_norm, move))
             outward   = max(0.0, alignment)
-            return node.distance_to_origin * (1.0 + outward)
+            return max(WEIGHT_FLOOR, node.distance_to_origin * (1.0 + outward))
 
         weights = [_weight(n) for n in viable_nodes]
         selected_node = random.choices(viable_nodes, weights=weights, k=1)[0]
@@ -230,7 +235,7 @@ class ProcessingNode:
         self.signal.prediction += scaled_delta
         self.signal.prediction = max(-self.PRED_CLIP, min(self.PRED_CLIP, self.signal.prediction))
 
-        if hasattr(self.signal, 'variance'):
+        if hasattr(self.signal, "variance"):
             self.signal.variance += abs(scaled_delta)
 
         # 5. Record contribution for gradient computation
@@ -323,6 +328,12 @@ class ProcessingNode:
             if dist > max_x:
                 scale = max_x / dist
                 new_position = [c * scale for c in new_position]
+
+        # Exact origin is forbidden: a node at (0,0,...) has distance_to_origin=0
+        # which collapses its routing weight to zero.  If gradient drift pushed
+        # every coordinate to zero, snap back to the original position instead.
+        if not any(abs(c) > 1e-9 for c in new_position):
+            new_position = list(self.original_position)
 
         self.position = tuple(new_position) if isinstance(self.position, tuple) else new_position
         self.distance_to_origin = sum(p ** 2 for p in self.position) ** 0.5

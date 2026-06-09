@@ -54,11 +54,13 @@ class JudgeNode:
         # Initialize centroids randomly
         centroids = random.sample(dataset, cluster_count)
 
-        for _ in range(3):
+        # Run up to 100 iterations; stop early when no centroid moves more than tol.
+        _KMEANS_MAX_ITER = 100
+        _KMEANS_TOL = 1e-6
+        for _ in range(_KMEANS_MAX_ITER):
             clusters = {i: [] for i in range(cluster_count)}
 
             for point in dataset:
-                
                 point_f = self.filter_features(point)
                 distances = [
                     self.euclidean_distance(point_f, self.filter_features(c))
@@ -79,7 +81,16 @@ class JudgeNode:
                 ]
                 new_centroids.append(centroid)
 
+            # Early stop: all centroids stationary within tolerance
+            max_shift = max(
+                self.euclidean_distance(
+                    self.filter_features(old), self.filter_features(new)
+                )
+                for old, new in zip(centroids, new_centroids)
+            )
             centroids = new_centroids
+            if max_shift < _KMEANS_TOL:
+                break
 
         self.segment_weights['clusters'] = [
             self.cluster_create(c, clusters[i])

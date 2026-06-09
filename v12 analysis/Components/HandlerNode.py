@@ -21,7 +21,7 @@ class HandlerNode:
         self.reports['segment_relevance'].append(segment_relevance)
         self.reports['predictions'].append(prediction)
 
-    def process_reports(self, loud: bool) -> float | None:
+    def process_reports(self, loud: bool, aggregation_mode: str = "bma") -> float | None:
         if not self.reports['predictions']:
             self.display("No predictions to process.", Loud=loud)
             return None
@@ -37,27 +37,45 @@ class HandlerNode:
                 segments[seg_id] = {'relevance': relevance, 'predictions': []}
             segments[seg_id]['predictions'].append(prediction)
 
-        # Bayesian Model Averaging:
-        # weight_s = relevance_s / max(variance_s, eps), clamped to avoid
-        # degenerate dominance when a segment outputs a constant (var → 0).
-        eps = 1e-9
-        max_weight = 1e6
-        weights: list[float] = []
         means: list[float] = []
+        weights: list[float] = []
 
         for seg_id, data in segments.items():
             preds = data['predictions']
             mean_s = sum(preds) / len(preds)
-            var_s = sum((p - mean_s) ** 2 for p in preds) / len(preds) if len(preds) > 1 else eps
-            weight_s = min(data['relevance'] / max(var_s, eps), max_weight)
             means.append(mean_s)
+
+            if aggregation_mode == "bma":
+                # Bayesian Model Averaging: relevance / inter-reviewer variance.
+                # Raw weights are computed here and normalized below after the loop
+                # so no single segment dominates due to near-zero variance.
+                eps = 1e-9
+                var_s = sum((p - mean_s) ** 2 for p in preds) / len(preds) if len(preds) > 1 else eps
+                weight_s = data['relevance'] / max(var_s, eps)
+                self.display(f"Segment {seg_id}: mean={mean_s:.4f} var={var_s:.6f} relevance={data['relevance']:.4f} weight={weight_s:.4f}", Loud=loud)
+            elif aggregation_mode == "relevance_weighted":
+                weight_s = data['relevance']
+                self.display(f"Segment {seg_id}: mean={mean_s:.4f} relevance={data['relevance']:.4f}", Loud=loud)
+            else:  # simple_mean
+                weight_s = 1.0
+                self.display(f"Segment {seg_id}: mean={mean_s:.4f}", Loud=loud)
+
             weights.append(weight_s)
-            self.display(f"Segment {seg_id}: mean={mean_s:.4f} var={var_s:.6f} relevance={data['relevance']:.4f} weight={weight_s:.4f}", Loud=loud)
+
+        # Normalize BMA weights relative to their maximum so no single segment
+        # dominates when its inter-reviewer variance happens to be near zero.
+        if aggregation_mode == "bma" and weights:
+            max_w = max(weights)
+            if max_w > 0:
+                weights = [w / max_w for w in weights]
 
         total_weight = sum(weights)
+        if total_weight == 0.0:  # all relevances zero — fall back to equal weights
+            weights = [1.0] * len(weights)
+            total_weight = float(len(weights))
         final_prediction = sum(m * w for m, w in zip(means, weights)) / total_weight
 
-        self.display(f"Final aggregated prediction: {final_prediction:.4f}", Loud=loud)
+        self.display(f"[{aggregation_mode}] Final aggregated prediction: {final_prediction:.4f}", Loud=loud)
         self.reports = {
             'segment': [],
             'segment_relevance': [],

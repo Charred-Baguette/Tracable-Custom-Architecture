@@ -165,8 +165,8 @@ if __name__ == "__main__":
     DIMENSIONS           = 2
     CONN_PCT             = 0.1
     DENSITY              = 0.8
-    TRAINING_MODE        = "full"  # "partitioned" = JudgeNode routing, "full" = all segments on full dataset
-    AGGREGATION_MODE     = "relevance_weighted"   # "bma" = relevance/variance weighting, "simple_mean" = equal weight average, "relevance_weighted" = normalized relevance scores
+    TRAINING_MODE        = "partitioned"  # "partitioned" = JudgeNode routing, "full" = all segments on full dataset
+    AGGREGATION_MODE     = "bma"   # "bma" = relevance/variance weighting, "simple_mean" = equal weight average, "relevance_weighted" = normalized relevance scores
     IGNORED_COLS           = ['student_id']  # Example of columns to drop during preprocessing (e.g. IDs that don't help prediction)
     # Per-segment colours for the combined graph
     SEG_COLORS = ["steelblue", "tomato", "mediumseagreen", "darkorchid",

@@ -4,7 +4,6 @@ class Signal:
         self.position = position
         self.prediction = prediction
         self.input = input
-        self.variance = variance
         self.feature_relevance = feature_relevance
         self.max_x = max_x
         self.visited_nodes = []  # Nodes that have processed this signal (for path_contributions)
@@ -14,10 +13,11 @@ class Signal:
 
         # Additional calculated attributes
         self.signal_life = (max_x ** 2) * .8 # Life of signal based on max_x
-        
+        self.variance = variance
+
     def __repr__(self):
         return f"Signal(pos={self.position}, pred={self.prediction}, input={self.input}, var={self.variance}, relevance={self.feature_relevance}, max_x={self.max_x})"
-    
+
     def is_active(self):
         return self.signal_life > 0
 

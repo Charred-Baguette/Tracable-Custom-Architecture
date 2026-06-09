@@ -1,0 +1,457 @@
+Simulated Attack Detection — DragonChild v12 Implementation Plan
+================================================================
+Project: Adversarial Network Defense using DragonChild + Reinforcement Learning
+Target folder: v12/cybersec/
+No external dataset required — all training data is self-generated.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. CONCEPT SUMMARY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+A red agent (attacker simulation) generates adversarial traffic feature vectors.
+DragonChild (blue agent) learns to predict a threat_score for each feature vector.
+The two agents run in an adversarial loop:
+  - Red agent tunes its attack parameters to maximally evade detection.
+  - DragonChild retrains each iteration on the new adversarial examples.
+  - Over time DragonChild is exposed to increasingly subtle attack patterns,
+    producing a model that generalises to novel threats rather than memorising
+    a static dataset.
+
+This is NOT a full network simulation. There are no real packets, no Scapy,
+no Mininet. The environment is a Python feature-vector generator whose
+statistical distributions are tuned by the red agent. The entire system is
+self-contained and runnable on a single machine.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+2. WHY THE DRAGONCHILD ARCHITECTURE FITS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Component             Cybersec meaning
+--------------------- -------------------------------------------------------
+JudgeNode K-means     Unsupervised discovery of traffic behavioural clusters
+                      (scanning, exfiltration, brute-force, benign) without
+                      any manual labelling. The model finds its own regimes.
+
+Segments (2D = 4)     One specialised expert per discovered traffic regime.
+                      Partitioned training means each expert sees only the
+                      data that belongs to its cluster — mirrors how a real
+                      IDS tunes per traffic class.
+
+Signal propagation    Analogous to a threat indicator travelling through
+                      network zones. Signals that reach reviewers cleanly
+                      (low variance) represent well-understood patterns;
+                      high-variance signals flag novel or ambiguous traffic.
+
+Signal variance       Built-in uncertainty quantification. When reviewers
+                      disagree on a threat score (high inter-reviewer
+                      variance), the BMA weight drops — the system says
+                      "I am not sure" rather than committing to a wrong
+                      classification. This drives the analyst escalation
+                      decision in a VI deployment.
+
+BMA aggregation       Produces a single calibrated threat_score from all
+                      active segments. Segments whose cluster does not match
+                      the input receive low JudgeNode relevance and are
+                      down-weighted automatically.
+
+Position gradients    Nodes migrate toward the regions of feature space
+                      where they contribute most. After adversarial training,
+                      nodes cluster around the decision boundary between
+                      subtle attacks and normal traffic — interpretable
+                      topology that can be visualised and audited.
+
+Density sweep         The optimisation work already done (density_optimizer)
+                      directly answers "how many nodes does each segment need
+                      to reliably distinguish attack from benign?" for this
+                      feature space. Run the optimizer on generated data
+                      instead of Exam_Score_Prediction.csv.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+3. FILE STRUCTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+v12/
+  cybersec/
+    TrafficGenerator.py     -- Generates feature DataFrames for each traffic type
+    RedAgent.py             -- RL attacker; tunes attack distributions to evade
+    BlueEvaluator.py        -- Runs SystemHandler inference; computes metrics
+    AdversarialTrainer.py   -- Orchestrates the red/blue training loop
+    config.py               -- All constants (feature names, attack parameters,
+                               thresholds, SystemHandler hyperparameters)
+    runs/                   -- Per-iteration detection logs and saved .nexseg
+    data/                   -- Cached generated DataFrames for reproducibility
+
+No existing v12 files are modified. All new code calls the public API:
+  SystemHandler.__init__, initializeAllSegments, train, runInfer
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+4. FEATURE VECTOR DEFINITION
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+All features are continuous floats after preprocessing. The target column is
+threat_score (0.0 = benign, 1.0 = confirmed malicious).
+
+Feature           Description                               Range
+----------------- ----------------------------------------- ---------------
+pkt_size          Mean packet size in bytes                 40 - 9000
+duration_ms       Connection duration in milliseconds       1 - 300000
+bytes_in          Bytes received by destination             0 - 10^8
+bytes_out         Bytes sent by source                      0 - 10^8
+bytes_ratio       bytes_out / (bytes_in + bytes_out)        0.0 - 1.0
+payload_entropy   Shannon entropy of payload sample         0.0 - 8.0
+dst_port          Destination port (normalised 0-1)         0.0 - 1.0
+conn_rate         New connections per 10-second window      0 - 1000
+unique_dst        Distinct destination IPs in window        0 - 500
+ttl_mean          Mean TTL of packets in connection         1 - 255
+flag_ratio        Ratio of SYN-only to total packets        0.0 - 1.0
+retry_count       TCP retransmission count                  0 - 50
+threat_score      TARGET: ground-truth maliciousness        0.0 - 1.0
+
+Rational for this feature set:
+  - port_scan produces high conn_rate, high unique_dst, high flag_ratio,
+    low pkt_size, low duration
+  - brute_force produces high conn_rate, low unique_dst, high retry_count
+  - lateral_movement produces moderate conn_rate, specific dst_port ranges,
+    low bytes_ratio (command traffic is mostly outbound)
+  - exfiltration produces low conn_rate, very high bytes_in, high entropy,
+    unusual dst_port, long duration
+  - benign produces moderate everything with low entropy on known ports
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+5. TRAFFIC GENERATOR  (TrafficGenerator.py)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Each traffic type is a named distribution over the feature vector. The
+generator accepts a parameter dict so the red agent can deform these
+distributions during adversarial training.
+
+Class: TrafficGenerator
+  __init__(self, seed=42)
+  generate(n_samples, mix, attack_params) -> pd.DataFrame
+    mix: dict of {traffic_type: fraction}
+        e.g. {'benign': 0.6, 'port_scan': 0.15, 'brute_force': 0.15,
+               'lateral': 0.05, 'exfil': 0.05}
+    attack_params: dict of {traffic_type: {param_name: value}}
+        e.g. {'port_scan': {'noise_scale': 0.2, 'rate_multiplier': 1.5}}
+  _generate_benign(n, params) -> pd.DataFrame
+  _generate_port_scan(n, params) -> pd.DataFrame
+  _generate_brute_force(n, params) -> pd.DataFrame
+  _generate_lateral(n, params) -> pd.DataFrame
+  _generate_exfil(n, params) -> pd.DataFrame
+
+Each _generate_* method samples from a multivariate normal distribution
+parameterised by the base means/stds for that traffic type, then applies
+the red agent's noise_scale and rate_multiplier perturbations. This is what
+the red agent tunes — shifting attack statistics toward the benign distribution
+makes them harder to detect.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+6. RED AGENT  (RedAgent.py)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+The red agent is a simple RL agent (epsilon-greedy with hill-climbing) that
+controls the statistical parameters of attack traffic. It does NOT control
+DragonChild directly. Its only goal is to maximise evasion_rate.
+
+State:
+  Per-attack-type detection rate from the last evaluation.
+  e.g. {'port_scan': 0.92, 'brute_force': 0.85, 'lateral': 0.71, 'exfil': 0.63}
+
+Actions (for each attack type independently):
+  0: Increase noise_scale by delta    (make attack look more like random noise)
+  1: Decrease noise_scale by delta    (sharpen attack signature)
+  2: Multiply rate_multiplier by 0.9  (reduce attack intensity)
+  3: Multiply rate_multiplier by 1.1  (increase attack intensity)
+  4: Shift feature means toward benign mean by alpha (mimic normal traffic)
+  5: No change
+
+Reward:
+  R = evasion_rate_after - evasion_rate_before
+  Positive when DragonChild detection drops; negative when detection improves.
+
+Policy:
+  Epsilon-greedy: with probability epsilon pick random action, otherwise
+  pick the action that produced the highest reward historically for this
+  detection-rate band.
+  Epsilon decays from 0.5 to 0.05 over training iterations.
+
+Class: RedAgent
+  __init__(self, attack_types, epsilon_start=0.5, epsilon_end=0.05,
+           epsilon_decay=0.95, delta=0.05, alpha=0.02)
+  current_params(self) -> dict           returns current attack_params
+  select_actions(self, detection_rates) -> dict   picks action per type
+  update(self, detection_rates_before, detection_rates_after)
+  save(self, path) / load(cls, path)    checkpoint red agent state
+
+Design note: this is intentionally simple. The red agent does not need to
+be a deep RL agent because the action space is small (6 actions × 4 attack
+types = 24 total parameters). Hill-climbing over this space is sufficient
+to generate meaningful adversarial pressure on DragonChild.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+7. BLUE EVALUATOR  (BlueEvaluator.py)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Wraps SystemHandler.runInfer() and computes evaluation metrics. Uses a fixed
+validation set regenerated each iteration at the start of evaluation so
+results are comparable across iterations.
+
+Class: BlueEvaluator
+  __init__(self, system: SystemHandler, threshold=0.5)
+  evaluate(self, validation_df) -> EvalResult
+  evaluate_per_type(self, validation_df) -> dict{type: EvalResult}
+
+EvalResult (dataclass):
+  detection_rate    float    TP / (TP + FN)
+  false_positive    float    FP / (FP + TN)
+  precision         float    TP / (TP + FP)
+  f1                float    harmonic mean of precision and detection_rate
+  evasion_rate      float    1 - detection_rate
+  uncertainty_rate  float    fraction of samples where DragonChild returned
+                             None (no reviewer reached) — high values
+                             indicate the model needs more training data or
+                             larger segments for this input region
+  mean_confidence   float    mean of 1/(1+variance) across all samples
+                             (higher = more confident predictions overall)
+
+The uncertainty_rate and mean_confidence metrics are unique to DragonChild
+and cannot be computed with standard classifiers. They expose when the model
+is operating outside its training distribution — critical for security use.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+8. ADVERSARIAL TRAINER  (AdversarialTrainer.py)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Orchestrates the full loop. Calls existing v12 code unchanged.
+
+Class: AdversarialTrainer
+  __init__(self, config: TrainerConfig)
+  run(self, n_iterations: int)
+  _build_system(self) -> SystemHandler     standard SystemHandler setup
+  _iteration(self, i: int)
+  save_checkpoint(self, i: int)
+  load_checkpoint(self, i: int)
+  plot_learning_curves(self)
+
+Single iteration flow:
+  1. Red agent selects actions → updates attack_params
+  2. TrafficGenerator produces training DataFrame (n=TRAIN_SAMPLES)
+     using current attack_params and TRAIN_MIX ratio
+  3. SystemHandler.train(training_df, epoch_count=TRAIN_EPOCHS)
+     — JudgeNode re-clusters on new data distribution
+     — All segments retrain on their assigned subset
+  4. TrafficGenerator produces validation DataFrame (n=VAL_SAMPLES)
+     using BASE_MIX (fixed) and current attack_params
+  5. BlueEvaluator.evaluate_per_type(validation_df)
+  6. RedAgent.update(detection_rates_before, detection_rates_after)
+  7. Log metrics, save checkpoint if detection improved
+
+Key design decision — retrain from scratch vs. fine-tune:
+  Option A (retrain): rebuild SystemHandler each iteration.
+    Pro: JudgeNode re-clusters on new distribution — segments stay aligned.
+    Con: slower per iteration.
+  Option B (fine-tune): keep existing weights, just run more epochs.
+    Pro: faster, preserves learned structure.
+    Con: JudgeNode clusters may drift from current data distribution.
+  Recommended: use Option B for iterations 2-N, Option A every 5 iterations
+  to re-anchor JudgeNode. This matches how a real IDS would periodically
+  re-baseline its clustering while continuously learning.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+9. CONFIGURATION  (config.py)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+SystemHandler settings:
+  MAX_X               = 10
+  DIMENSIONS          = 2        (4 segments = 4 traffic regime clusters)
+  DENSITY             = 0.7
+  CONNECTION_PCT      = 0.1
+  TARGET_COL          = 'threat_score'
+  IGNORED_COLS        = []
+  TRAIN_EPOCHS        = 5
+  JUDGE_ITERS         = 10
+  JUDGE_MIN_CLUSTERS  = 4
+  JUDGE_MAX_CLUSTERS  = 16
+  AGGREGATION_MODE    = 'bma'    (uncertainty-weighted — critical for security)
+  SELECTION_PCT       = 0.5      (use top 2 of 4 segments per inference call)
+
+Training loop settings:
+  N_ITERATIONS        = 30       (red/blue training cycles)
+  TRAIN_SAMPLES       = 8000     (samples per iteration for training)
+  VAL_SAMPLES         = 2000     (fixed-size validation set)
+  RETRAIN_FULL_EVERY  = 5        (re-run JudgeNode clustering every N iters)
+
+Traffic mix settings:
+  TRAIN_MIX = {                  (what DragonChild trains on)
+    'benign':      0.60,
+    'port_scan':   0.10,
+    'brute_force': 0.10,
+    'lateral':     0.10,
+    'exfil':       0.10,
+  }
+  BASE_VAL_MIX = {               (fixed validation distribution)
+    'benign':      0.50,
+    'port_scan':   0.125,
+    'brute_force': 0.125,
+    'lateral':     0.125,
+    'exfil':       0.125,
+  }
+
+Detection threshold:
+  THREAT_THRESHOLD = 0.5         (above = malicious classification)
+  False positives cost more in a real deployment. Consider raising to 0.65
+  after baseline detection rates are confirmed.
+
+Red agent settings:
+  EPSILON_START  = 0.5
+  EPSILON_END    = 0.05
+  EPSILON_DECAY  = 0.92
+  PARAM_DELTA    = 0.05          (step size for noise_scale adjustments)
+  FEATURE_ALPHA  = 0.02          (step size for mean-shift toward benign)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+10. IMPLEMENTATION PHASES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Phase 1 — Data Layer (TrafficGenerator.py + config.py)
+  Goal: produce a valid DataFrame that SystemHandler can train on.
+  Done when: system.train(generate_traffic(8000, TRAIN_MIX)) completes without
+             error and the resulting model produces non-None predictions.
+  No RL yet. Treat this exactly like plugging in a new CSV.
+
+Phase 2 — Baseline Blue Agent (BlueEvaluator.py)
+  Goal: measure detection performance of an untrained/randomly initialised
+        DragonChild on the validation set.
+  Done when: EvalResult.detection_rate > 0.5 for at least two attack types
+             after 5 training epochs. This confirms the feature set is
+             discriminative enough for the model to learn from.
+  Expected baseline (untrained): ~50% detection (random chance).
+  Expected after Phase 2 training: 70-85% detection on static data.
+
+Phase 3 — Red Agent Loop (RedAgent.py + AdversarialTrainer.py)
+  Goal: introduce adversarial pressure and confirm DragonChild adapts.
+  Done when: after 10 iterations, detection rate on adversarially-tuned
+             attacks stays above 65% despite red agent optimisation.
+  Key metric to watch: evasion_rate per attack type over iterations.
+  Expected pattern: evasion rises after red agent tunes (iterations 1-3),
+  then drops as DragonChild adapts (iterations 4-8), stabilising at a
+  contested equilibrium (iterations 9+).
+
+Phase 4 — Uncertainty-Driven Escalation
+  Goal: use DragonChild's built-in uncertainty to drive a decision policy.
+  Define: escalate if mean_confidence < 0.4 OR prediction is None.
+  Define: auto-classify (block) if threat_score > 0.65 AND mean_confidence > 0.7.
+  Define: auto-pass (allow) if threat_score < 0.35 AND mean_confidence > 0.7.
+  Define: flag-for-review for all other cases.
+  This is the "virtual analyst" layer on top of the detector.
+  Done when: escalation rate on validation set is below 20% while
+             maintaining detection_rate above 80% on auto-classified samples.
+
+Phase 5 — Optimisation Integration
+  Goal: run density_optimizer against the traffic dataset instead of the
+        exam score dataset to find optimal DragonChild hyperparameters for
+        the security domain.
+  Change in density_optimizer.py: update DATASET_CSV to point to a cached
+  TrafficGenerator output; update TARGET_COL to 'threat_score'.
+  This reuses all existing optimiser work directly — no modifications needed
+  beyond the two constants.
+  Done when: optimizer sweep identifies a density/max_x combination that
+             achieves F1 > 0.80 across all attack types.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+11. EVALUATION METRICS AND LOGGING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Per iteration, log to runs/iteration_{N}/metrics.csv:
+  iteration, attack_type, detection_rate, false_positive_rate,
+  precision, f1, evasion_rate, uncertainty_rate, mean_confidence,
+  red_noise_scale, red_rate_multiplier, red_feature_shift
+
+Aggregate across iterations to produce:
+  learning_curve.png  — detection_rate per attack type over iterations
+  arms_race.png       — evasion_rate (red) vs detection_rate (blue) over time
+  uncertainty_map.png — scatter of mean_confidence vs threat_score for all
+                        validation samples, coloured by true label
+
+The uncertainty_map is the key architectural contribution to highlight.
+It shows DragonChild's decision boundary AND its confidence simultaneously —
+something a standard MLP cannot do cleanly without calibration post-processing.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+12. ARCHITECTURAL INSIGHTS TO DOCUMENT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+These are the findings worth writing up as the project matures:
+
+1. Emergent segment specialisation
+   After training, visualise each segment's node positions and the feature
+   distributions of the data assigned to it by JudgeNode. Do the segments
+   correspond to recognisable traffic regimes without having been told to?
+   Expected: yes. This is the unsupervised regime discovery claim.
+
+2. Variance as a novelty detector
+   When the red agent produces attack variants that have never appeared in
+   training (outside the training distribution), DragonChild's uncertainty
+   (inter-reviewer variance) should spike before the detection rate drops.
+   This means uncertainty is a leading indicator of concept drift — more
+   useful than detection rate alone for real-time alerting.
+
+3. Position gradient topology
+   After adversarial training, nodes near the decision boundary (where
+   threat_score ~ 0.5) should be more densely clustered than nodes in
+   clearly-benign or clearly-malicious regions. This reflects the model
+   allocating capacity where it is most needed — an emergent property
+   of the position gradient learning that standard MLPs do not exhibit.
+
+4. Segment failure modes
+   When the red agent successfully evades one segment, which others
+   compensate? BMA should down-weight the confused segment and up-weight
+   the ones that are more confident. Document this per-attack-type to show
+   that segment specialisation provides ensemble robustness.
+
+5. Convergence of the arms race
+   Track whether the red agent and blue agent reach a stable equilibrium
+   or if detection continues to improve as iterations increase. A stable
+   equilibrium suggests the model has saturated on the available feature
+   space; continued improvement suggests the feature set is rich enough
+   to keep learning from adversarial pressure.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+13. WHAT IS NOT IN SCOPE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+- Real packet capture or network traffic (no Scapy, no Wireshark integration)
+- Actual exploitation of vulnerabilities (all traffic is simulated)
+- External RL libraries (no Gym, no Stable-Baselines)
+- Classification output (DragonChild remains a regression model; binary
+  classification is applied by thresholding the threat_score at inference)
+- Multi-step sequential attack modelling (each feature vector is a single
+  connection event; temporal correlations between events are encoded as
+  features like conn_rate rather than via recurrence)
+
+All of the above are valid future extensions but are out of scope for the
+initial implementation to keep the project focused on DragonChild's
+architectural properties.
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+14. DEPENDENCIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+All already present in the v12 environment:
+  numpy, pandas, matplotlib, rich, scikit-learn (for PCA in visualisations)
+
+No new packages required.

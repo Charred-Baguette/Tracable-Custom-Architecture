@@ -46,13 +46,12 @@ class HandlerNode:
             means.append(mean_s)
 
             if aggregation_mode == "bma":
-                # Bayesian Model Averaging:
-                # weight_s = relevance_s / max(variance_s, eps), clamped to avoid
-                # degenerate dominance when a segment outputs a constant (var → 0).
+                # Bayesian Model Averaging: relevance / inter-reviewer variance.
+                # Raw weights are computed here and normalized below after the loop
+                # so no single segment dominates due to near-zero variance.
                 eps = 1e-9
-                max_weight = 1e6
                 var_s = sum((p - mean_s) ** 2 for p in preds) / len(preds) if len(preds) > 1 else eps
-                weight_s = min(data['relevance'] / max(var_s, eps), max_weight)
+                weight_s = data['relevance'] / max(var_s, eps)
                 self.display(f"Segment {seg_id}: mean={mean_s:.4f} var={var_s:.6f} relevance={data['relevance']:.4f} weight={weight_s:.4f}", Loud=loud)
             elif aggregation_mode == "relevance_weighted":
                 weight_s = data['relevance']
@@ -62,6 +61,13 @@ class HandlerNode:
                 self.display(f"Segment {seg_id}: mean={mean_s:.4f}", Loud=loud)
 
             weights.append(weight_s)
+
+        # Normalize BMA weights relative to their maximum so no single segment
+        # dominates when its inter-reviewer variance happens to be near zero.
+        if aggregation_mode == "bma" and weights:
+            max_w = max(weights)
+            if max_w > 0:
+                weights = [w / max_w for w in weights]
 
         total_weight = sum(weights)
         if total_weight == 0.0:  # all relevances zero — fall back to equal weights

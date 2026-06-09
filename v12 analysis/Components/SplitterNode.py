@@ -23,8 +23,7 @@ class SplitterNode:
         distances = {}
         self.connected_nodes = []
         for node in nodes:
-            for _ in self.position:
-                distance = sum((p1 - p2) ** 2 for p1, p2 in zip(self.position, node.position)) ** 0.5
+            distance = sum((p1 - p2) ** 2 for p1, p2 in zip(self.position, node.position)) ** 0.5
             distances[node] = distance
         sorted_distances = dict(sorted(distances.items(), key=lambda item: item[1]))
         

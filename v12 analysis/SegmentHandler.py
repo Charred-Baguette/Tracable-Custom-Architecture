@@ -17,6 +17,7 @@ class SegmentHandler:
         self.density = density
         self.dimensions = dimensions
         self.classification = classification
+        self.best_epoch_metrics = None
 
         if self.logger is None:
             raise ValueError("Logger must be provided for SegmentHandler.")
@@ -538,7 +539,8 @@ class SegmentHandler:
                         progress.update(task, advance=1)
                     continue
 
-                _, reviewer_data = self._forward_segment(sample)
+                features = {k: v for k, v in sample.items() if k != self.target}
+                _, reviewer_data = self._forward_segment(features)
 
                 # 1. Weight update
                 loss = self._backprop(reviewer_data, target, 'weights')
@@ -598,7 +600,8 @@ class SegmentHandler:
             target_val = sample.get(self.target)
             if target_val is None:
                 continue
-            _, reviewer_data = self._forward_segment(sample)
+            features = {k: v for k, v in sample.items() if k != self.target}
+            _, reviewer_data = self._forward_segment(features)
             preds = [pred for _, _, pred in reviewer_data if pred is not None]
             if not preds:
                 continue
@@ -758,6 +761,19 @@ class SegmentHandler:
             writer.writerow(row)
         self.display(f"Run metrics appended to {csv_path}.", classification=4)
 
+        # Store for SystemHandler final report
+        self.best_epoch_metrics = {
+            'segment_id': self.segment_id,
+            'best_epoch': best_epoch,
+            'n_train': n_train,
+            'n_test': n,
+            'mae': mae, 'rmse': rmse, 'r2': r2, 'mape': mape,
+            'acc_5': acc_5, 'acc_10': acc_10, 'acc_20': acc_20,
+            'dir_acc': dir_acc,
+            'precision': precision, 'recall': recall, 'f1': f1,
+            'tp': tp, 'fp': fp, 'fn': fn, 'tn': tn,
+        }
+
     def _eval_avg_error(self, test_list):
         """Average % error across all samples in test_list using inference forward pass."""
         errors = []
@@ -765,7 +781,8 @@ class SegmentHandler:
             target_val = sample.get(self.target)
             if target_val is None or target_val == 0:
                 continue
-            _, reviewer_data = self._forward_segment(sample)
+            features = {k: v for k, v in sample.items() if k != self.target}
+            _, reviewer_data = self._forward_segment(features)
             preds = [pred for _, _, pred in reviewer_data if pred is not None]
             if not preds:
                 continue
@@ -908,7 +925,7 @@ class SegmentHandler:
         # Eval sample taken from test split so it was never seen during training
         eval_sample = test_list[0]
         eval_actual = eval_sample.get(self.target)
-        eval_pre    = eval_sample.copy()
+        eval_pre    = {k: v for k, v in eval_sample.items() if k != self.target}
 
         prev_loss          = float('inf')
         has_prog           = hasattr(self.logger, 'make_progress')

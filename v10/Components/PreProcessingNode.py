@@ -1,11 +1,11 @@
 import pandas as pd
 
 class PreProcesingNode:
-    def __init__(self, Logger, logger_classification):
+    def __init__(self, Logger, logger_classification, removable_columns=None):
         self.data = []
         self.Logger = Logger
         self.classification = logger_classification  
-        self.removable_columns = ['student_id']  # Example of a column that might be removed during preprocessing
+        self.removable_columns = removable_columns if removable_columns is not None else []  # Example of a column that might be removed during preprocessing
 
         self._cat_vocab = {}          
         self._all_columns = set() 

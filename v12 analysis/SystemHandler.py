@@ -10,7 +10,7 @@ from Components.PreProcessingNode import PreProcesingNode
 from Components.HandlerNode import HandlerNode
 
 class SystemHandler:
-    def __init__(self, maxX, target='exam_score', logger = None, connection_percentage=.08, density = .95, dimensions = 2, classification = 1):
+    def __init__(self, maxX, target='exam_score', logger = None, connection_percentage=.08, density = .95, dimensions = 2, classification = 1, removable_columns=None):
         self.dimensions = dimensions
         self.max_x = maxX
         self.target = target
@@ -22,7 +22,7 @@ class SystemHandler:
         self.segments = []
         self.JudgeNode = JudgeNode(logger=self.logger, target=self.target, classification=self.classification)
         self.HandlerNode = HandlerNode(logger=self.logger, classification=self.classification)
-        self.preprocessor = PreProcesingNode(Logger=self.logger, logger_classification=4)
+        self.preprocessor = PreProcesingNode(Logger=self.logger, logger_classification=4, removable_columns=removable_columns)
 
 
     def display(self, message, classification = None, Loud = True):
@@ -60,6 +60,7 @@ class SystemHandler:
         judge_input = preprocessed.drop(columns=[self.target], errors='ignore')
         self.JudgeNode.train(judge_input, judge_iterations, segments=self.segments,
                              min_clusters=judge_min_clusters, max_clusters=judge_max_clusters)
+        self.display("JudgeNode training complete. Proceeding to segment training...", Loud=loud)
 
         # Step 2: Map each cluster's points back to original dataset row indices.
         # Use the same target-dropped view for the lookup so tuple keys match cluster points.
@@ -89,7 +90,19 @@ class SystemHandler:
             self.display(f"Training segment {segment.segment_id} on {len(subset)}/{len(dataset)} rows...", Loud=loud)
             segment.train(subset, epoch_count=epoch_count, preprocessor=self.preprocessor)
 
-    def runInfer(self, input, loud = True):
+    def train_full(self, dataset, epoch_count: int = 5, loud: bool = True) -> None:
+        """Train every segment on the complete dataset (no JudgeNode partitioning).
+        JudgeNode routing still works at inference — clusters are built on the
+        full dataset so all segments see the same data distribution during training."""
+        if not self.segments:
+            raise ValueError("Segments must be initialized before training. Call initializeAllSegments() first.")
+
+        self.display("Full-dataset training mode — all segments train on complete dataset.", Loud=loud)
+        for segment in self.segments:
+            self.display(f"Training segment {segment.segment_id} on {len(dataset)} rows...", Loud=loud)
+            segment.train(dataset, epoch_count=epoch_count, preprocessor=self.preprocessor)
+
+    def runInfer(self, input, loud = True, aggregation_mode: str = "bma", selection_percentage: float = .5):
         if self.JudgeNode is None or self.HandlerNode is None:
             raise ValueError("JudgeNode or HandlerNode not assigned")
 
@@ -106,19 +119,24 @@ class SystemHandler:
             selected_segments = [(s.segment_id, 1.0) for s in self.segments]
         else:
             relevance_scores  = self.JudgeNode.calculate_input_segment_relevance(judge_input, Loud=loud)
-            selected_segments = self.JudgeNode.find_relevant_segments(relevance_scores, Loud=loud)
+            selected_segments = self.JudgeNode.find_relevant_segments(relevance_scores, selection_percentage=selection_percentage, Loud=loud)
 
         self.display(f"Selected segments: {[sid for sid, _ in selected_segments]}", Loud=loud)
+        self.NumberSegsUsed = len(selected_segments)
+
+        # Strip target from segment input — segments must not see the answer at inference time.
+        seg_input = {k: v for k, v in pre_input.items() if k != self.target}
 
         segment_map = {s.segment_id: s for s in self.segments}
         for segment_id, relevance in selected_segments:
             segment = segment_map[segment_id]
-            reports = segment.segmentInfer(pre_input, loud=loud)
+            reports = segment.segmentInfer(seg_input, loud=loud)
             for report in reports:
                 self.HandlerNode.receive_report(segment_id, relevance, report['prediction'])
 
-        return self.HandlerNode.process_reports(loud)
-
+        return self.HandlerNode.process_reports(loud, aggregation_mode=aggregation_mode)
+    def getNumberSegmentsUsed(self):
+        return self.NumberSegsUsed if hasattr(self, 'NumberSegsUsed') else None
 
 if __name__ == "__main__":
     import sys
@@ -136,17 +154,20 @@ if __name__ == "__main__":
     from rich.panel import Panel
     from rich import box
 
-    DATASET_CSV        = "Exam_Score_Prediction.csv"
-    TARGET_COL         = "exam_score"
-    EPOCH_COUNT        = 20
-    JUDGE_ITERS        = 20
-    JUDGE_MIN_CLUSTERS = 4    # minimum cluster count during JudgeNode training
-    JUDGE_MAX_CLUSTERS = 20   # maximum cluster count during JudgeNode training
-    MAX_X              = 10
-    DIMENSIONS         = 2
-    CONN_PCT           = 0.1
-    DENSITY            = 0.8
-
+    DATASET_CSV          = "Exam_Score_Prediction.csv"
+    TARGET_COL           = "exam_score"
+    EPOCH_COUNT          = 20
+    JUDGE_ITERS          = 20
+    JUDGE_MIN_CLUSTERS   = 4    # minimum cluster count during JudgeNode training
+    JUDGE_MAX_CLUSTERS   = 20   # maximum cluster count during JudgeNode training
+    SELECTION_PERCENTAGE = .5
+    MAX_X                = 10
+    DIMENSIONS           = 2
+    CONN_PCT             = 0.1
+    DENSITY              = 0.8
+    TRAINING_MODE        = "partitioned"  # "partitioned" = JudgeNode routing, "full" = all segments on full dataset
+    AGGREGATION_MODE     = "bma"   # "bma" = relevance/variance weighting, "simple_mean" = equal weight average, "relevance_weighted" = normalized relevance scores
+    IGNORED_COLS           = ['student_id']  # Example of columns to drop during preprocessing (e.g. IDs that don't help prediction)
     # Per-segment colours for the combined graph
     SEG_COLORS = ["steelblue", "tomato", "mediumseagreen", "darkorchid",
                   "darkorange", "hotpink", "teal", "saddlebrown"]
@@ -219,12 +240,13 @@ if __name__ == "__main__":
 
     # ── Load dataset ──────────────────────────────────────────────────────
     dataset    = pd.read_csv(DATASET_CSV)
+    dataset    = dataset.sample(frac=1).reset_index(drop=True) #shuffled
     sample_raw = dataset.iloc[0].to_dict()
     actual     = sample_raw.get(TARGET_COL)
     logger.log(f"Dataset loaded: {len(dataset)} rows. Evaluation sample actual {TARGET_COL}: {actual}", 4, True)
 
     # ── Warm up shared preprocessor vocabulary ────────────────────────────
-    _warmup_pre = PreProcesingNode(Logger=logger, logger_classification=4)
+    _warmup_pre = PreProcesingNode(Logger=logger, logger_classification=4, removable_columns=IGNORED_COLS)
     _warmup_pre.process_dataset(dataset.copy())
 
     # ── Build & initialise system ─────────────────────────────────────────
@@ -232,7 +254,8 @@ if __name__ == "__main__":
     system = SystemHandler(
         maxX=MAX_X, target=TARGET_COL, logger=logger,
         connection_percentage=CONN_PCT, density=DENSITY,
-        dimensions=DIMENSIONS, classification=4
+        dimensions=DIMENSIONS, classification=4,
+        removable_columns=IGNORED_COLS,
     )
     system.initializeAllSegments(Loud=True)
     logger.log(f"Segments initialised: {[s.segment_id for s in system.segments]}", 4, True)
@@ -244,13 +267,17 @@ if __name__ == "__main__":
 
     # ── Pre-training inference (all segments equally weighted) ────────────
     logger.console.print(Rule("[bold yellow]Pre-Training Inference[/bold yellow]"))
-    pre_prediction = system.runInfer(sample_raw.copy(), loud=False)
+    pre_prediction = system.runInfer(sample_raw.copy(), loud=False, aggregation_mode=AGGREGATION_MODE, selection_percentage=SELECTION_PERCENTAGE)
     logger.log(f"Pre-training prediction: {pre_prediction}", 4, True)
 
     # ── Train ─────────────────────────────────────────────────────────────
     logger.console.print(Rule("[bold green]Training[/bold green]"))
-    system.train(dataset, epoch_count=EPOCH_COUNT, judge_iterations=JUDGE_ITERS, loud=True,
-                 judge_min_clusters=JUDGE_MIN_CLUSTERS, judge_max_clusters=JUDGE_MAX_CLUSTERS)
+    if TRAINING_MODE == "full":
+        system.train_full(dataset, epoch_count=EPOCH_COUNT, loud=True)
+    else:
+        system.train(dataset, epoch_count=EPOCH_COUNT, judge_iterations=JUDGE_ITERS, loud=True,
+                     judge_min_clusters=JUDGE_MIN_CLUSTERS, judge_max_clusters=JUDGE_MAX_CLUSTERS)
+
 
     # ── Post-train graph ──────────────────────────────────────────────────
     logger.console.print(Rule("[bold yellow]Post-Training Graph[/bold yellow]"))
@@ -259,7 +286,7 @@ if __name__ == "__main__":
 
     # ── Post-training inference ───────────────────────────────────────────
     logger.console.print(Rule("[bold yellow]Post-Training Inference[/bold yellow]"))
-    post_prediction = system.runInfer(sample_raw.copy(), loud=True)
+    post_prediction = system.runInfer(sample_raw.copy(), loud=True, aggregation_mode=AGGREGATION_MODE, selection_percentage=SELECTION_PERCENTAGE)
 
     pre_err  = _err_pct(pre_prediction, actual)
     post_err = _err_pct(post_prediction, actual)
@@ -280,7 +307,7 @@ if __name__ == "__main__":
             if _actual_v is None:
                 _prog.update(_task, advance=1)
                 continue
-            _pred = system.runInfer(_row_dict, loud=False)
+            _pred = system.runInfer(_row_dict, loud=False, aggregation_mode=AGGREGATION_MODE, selection_percentage=SELECTION_PERCENTAGE)
             if _pred is not None:
                 _sys_preds.append(float(_pred))
                 _sys_actuals.append(float(_actual_v))
@@ -343,6 +370,10 @@ if __name__ == "__main__":
     cfg_table.add_row("Epoch Count",          str(EPOCH_COUNT))
     cfg_table.add_row("Judge Iterations",     str(JUDGE_ITERS))
     cfg_table.add_row("Cluster Count (final)",str(str(len(system.JudgeNode.segment_weights['clusters']))))
+    cfg_table.add_row("Training Mode",        TRAINING_MODE)
+    cfg_table.add_row("Aggregation Mode",     AGGREGATION_MODE)
+    if system.getNumberSegmentsUsed() is not None:
+        cfg_table.add_row("Segments Used (inference)", str(system.getNumberSegmentsUsed()))
     logger.console.print(cfg_table)
 
     # ── 2. Segment structure ──────────────────────────────────────────────
@@ -479,7 +510,40 @@ if __name__ == "__main__":
     sys_eval_table.add_row("TP / FP / FN / TN",   f"{_tp} / {_fp} / {_fn} / {_tn}")
     logger.console.print(sys_eval_table)
 
-    # ── 6. Saved artefacts ────────────────────────────────────────────────
+    # ── 6. Per-segment best-epoch summary ─────────────────────────────────
+    seg_metrics = [s.best_epoch_metrics for s in system.segments if s.best_epoch_metrics is not None]
+    if seg_metrics:
+        seg_best_table = Table(
+            title="Per-Segment Best-Epoch Test Metrics",
+            box=box.ROUNDED, border_style="magenta", show_lines=True
+        )
+        seg_best_table.add_column("Seg",         style="bold white",        justify="right")
+        seg_best_table.add_column("Best Epoch",  style="bright_cyan",       justify="right")
+        seg_best_table.add_column("Train Rows",  style="bright_cyan",       justify="right")
+        seg_best_table.add_column("MAE",         style="bright_magenta",    justify="right")
+        seg_best_table.add_column("RMSE",        style="bright_magenta",    justify="right")
+        seg_best_table.add_column("R²",          style="bright_magenta",    justify="right")
+        seg_best_table.add_column("MAPE",        style="bright_magenta",    justify="right")
+        seg_best_table.add_column("Dir Acc",     style="bright_green",      justify="right")
+        seg_best_table.add_column("F1",          style="bright_green",      justify="right")
+        seg_best_table.add_column("Acc@10%",     style="bright_green",      justify="right")
+        for m in seg_metrics:
+            _nan = lambda v: f"{v:.4f}" if not _math2.isnan(v) else "—"
+            seg_best_table.add_row(
+                str(m['segment_id']),
+                str(m['best_epoch']),
+                str(m['n_train']),
+                f"{m['mae']:.4f}",
+                f"{m['rmse']:.4f}",
+                _nan(m['r2']),
+                f"{m['mape']:.2f}%",
+                f"{m['dir_acc']:.1f}%",
+                _nan(m['f1']),
+                f"{m['acc_10']:.1f}%",
+            )
+        logger.console.print(seg_best_table)
+
+    # ── 7. Saved artefacts ────────────────────────────────────────────────
     art_table = Table(title="Saved Artefacts", box=box.SIMPLE,
                       border_style="dim", show_lines=False)
     art_table.add_column("File", style="bold white")
