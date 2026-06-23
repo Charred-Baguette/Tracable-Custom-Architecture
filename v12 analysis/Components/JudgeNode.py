@@ -9,6 +9,7 @@ from sklearn.decomposition import PCA
 class JudgeNode:
     def __init__(self, ignored_features=None, logger=None, classification=None, target=None):
         self.segments = []
+        random.seed(42)  # For reproducibility in clustering
         self.segment_weights = {
             'segment': [],
             'clusters': [],
