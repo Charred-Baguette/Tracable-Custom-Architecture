@@ -51,6 +51,14 @@ def _nexseg_files(nexseg_dir: str, dimensions: int) -> tuple[list[str], list[str
     return found, missing
 
 
+def _load_dataset(csv_path: str):
+    """Load a dataset from CSV or JSON, matching PreProcesingNode.process_dataset's format check."""
+    import pandas as pd
+    if csv_path.lower().endswith(".json"):
+        return pd.read_json(csv_path)
+    return pd.read_csv(csv_path)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared graph / metric helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -184,7 +192,7 @@ def run_train(settings: Settings, logger) -> None:
         return
 
     # ── Dataset ──────────────────────────────────────────────────────────
-    dataset = pd.read_csv(d["csv_path"])
+    dataset = _load_dataset(d["csv_path"])
     if d.get("shuffle", True):
         dataset = dataset.sample(frac=1).reset_index(drop=True)
     sample_raw = dataset.iloc[0].to_dict()
@@ -305,7 +313,7 @@ def run_infer(settings: Settings, logger) -> None:
         return
 
     # ── Pick sample index ─────────────────────────────────────────────────
-    dataset = pd.read_csv(d["csv_path"])
+    dataset = _load_dataset(d["csv_path"])
     console.print(f"[dim]Dataset: {len(dataset)} rows  |  target: {d['target_column']}[/dim]")
 
     idx = _prompt_int(console, "Sample index to evaluate", default=inf.get("sample_index", 0))
@@ -457,7 +465,7 @@ def run_compare(settings: Settings, logger) -> None:
 
     # ── Run ───────────────────────────────────────────────────────────────
     console.print(Rule("[bold green]Running Comparisons[/bold green]"))
-    dataset = pd.read_csv(d["csv_path"])
+    dataset = _load_dataset(d["csv_path"])
     manager = CompMgr.ComparisonManager(logger=logger)
     manager.run_all(
         dataset        = dataset,
