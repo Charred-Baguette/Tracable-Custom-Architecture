@@ -104,6 +104,7 @@ The `TCA0.6.0-Analysis/` folder is the benchmarking and evaluation harness for T
 
 
 ## Plans:
-- v14: Minor improvements to allow for greater variety of data sizes and types.
-- v15: Vizualization implementation: videos for 2D and 3D maps showing how signals are sent along, interactive window for analyzing signals and nodes as tables to show changing signal values at different nodes, etc.
+- Minor improvements to allow for greater variety of data sizes and types.
+- Vizualization implementation: videos for 2D and 3D maps showing how signals are sent along, interactive window for analyzing signals and nodes as tables to show changing signal values at different nodes, etc.
+
 note that these developements may not be developed in this order.
