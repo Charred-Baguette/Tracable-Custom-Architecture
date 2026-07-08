@@ -31,7 +31,10 @@ class PreProcesingNode:
         if isinstance(dataset, pd.DataFrame):
             pass
         elif isinstance(dataset, str):
-            dataset = pd.read_csv(dataset)
+            if dataset.lower().endswith(".json"):
+                dataset = pd.read_json(dataset)
+            else:
+                dataset = pd.read_csv(dataset)
         else:
             raise TypeError("dataset must be either a pandas DataFrame or a filepath string")
         with self.Logger.make_progress(transient=True) as progress:
