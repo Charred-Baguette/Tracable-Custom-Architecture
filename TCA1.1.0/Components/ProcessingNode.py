@@ -33,9 +33,21 @@ class ProcessingNode:
         self.activation_count = 0
         self.weight_gradients = {}
         self.position_gradient = [0.0] * len(position)
+        self.pred_min = None   # per-instance override; falls back to -PRED_CLIP if unset
+        self.pred_max = None   # per-instance override; falls back to  PRED_CLIP if unset
 
     def __repr__(self) -> str:
         return f"ProcessingNode(pos={self.position})"
+
+    def set_prediction_range(self, min_value, max_value):
+        """Override the propagated-prediction clip bounds (defaults to +/-PRED_CLIP)."""
+        self.pred_min = min_value
+        self.pred_max = max_value
+
+    def _prediction_clip_bounds(self):
+        lo = self.pred_min if self.pred_min is not None else -self.PRED_CLIP
+        hi = self.pred_max if self.pred_max is not None else self.PRED_CLIP
+        return lo, hi
     
     def display(self, message, classification = None, Loud = True):
         message = f"[ProcessingNode]: {message}"
@@ -193,7 +205,8 @@ class ProcessingNode:
 
         # 4. Update prediction
         self.signal.prediction += scaled_delta
-        self.signal.prediction = max(-self.PRED_CLIP, min(self.PRED_CLIP, self.signal.prediction))
+        lo, hi = self._prediction_clip_bounds()
+        self.signal.prediction = max(lo, min(hi, self.signal.prediction))
 
         if hasattr(self.signal, "variance"):
             self.signal.variance += abs(scaled_delta)
@@ -233,7 +246,8 @@ class ProcessingNode:
 
         # 4. Update prediction
         self.signal.prediction += scaled_delta
-        self.signal.prediction = max(-self.PRED_CLIP, min(self.PRED_CLIP, self.signal.prediction))
+        lo, hi = self._prediction_clip_bounds()
+        self.signal.prediction = max(lo, min(hi, self.signal.prediction))
 
         if hasattr(self.signal, "variance"):
             self.signal.variance += abs(scaled_delta)

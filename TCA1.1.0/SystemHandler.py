@@ -78,6 +78,17 @@ class SystemHandler:
             classification = self.classification
         self.logger.log(message, classification, Loud)
 
+    def _resolve_prediction_bounds(self, dataset, prediction_range_cfg):
+        """Resolve settings.dataset.prediction_range into concrete (min, max) bounds.
+        'auto' scans this run's full dataset target column; 'manual' uses the
+        configured values as-is. Returns (None, None) when cfg is absent."""
+        if not prediction_range_cfg:
+            return None, None
+        if prediction_range_cfg.get("mode") == "manual":
+            return prediction_range_cfg.get("min_value"), prediction_range_cfg.get("max_value")
+        col = dataset[self.target]
+        return float(col.min()), float(col.max())
+
     def initializeAllSegments(self, Loud = False):
         segmentCount = 2 ** self.dimensions
         for i in range(segmentCount):
@@ -91,10 +102,12 @@ class SystemHandler:
 
     def train(self, dataset, epoch_count: int = 5, judge_iterations: int = 10, loud: bool = True,
               judge_min_clusters: int | None = None, judge_max_clusters: int | None = None,
-              lr_scale_cfg: dict | None = None) -> None:
+              lr_scale_cfg: dict | None = None, prediction_range_cfg: dict | None = None) -> None:
         from collections import defaultdict
         if not self.segments:
             raise ValueError("Segments must be initialized before training. Call initializeAllSegments() first.")
+
+        pred_min, pred_max = self._resolve_prediction_bounds(dataset, prediction_range_cfg)
 
         # Step 1: Cluster the full dataset and assign clusters to segments.
         # Drop the target column before clustering — JudgeNode must partition on
@@ -135,21 +148,22 @@ class SystemHandler:
             subset = dataset.iloc[indices].reset_index(drop=True)
             self.display(f"Training segment {segment.segment_id} on {len(subset)}/{len(dataset)} rows...", Loud=loud)
             segment.train(subset, epoch_count=epoch_count, preprocessor=self.preprocessor,
-                          lr_scale_cfg=lr_scale_cfg)
+                          lr_scale_cfg=lr_scale_cfg, pred_min=pred_min, pred_max=pred_max)
 
     def train_full(self, dataset, epoch_count: int = 5, loud: bool = True,
-                    lr_scale_cfg: dict | None = None) -> None:
+                    lr_scale_cfg: dict | None = None, prediction_range_cfg: dict | None = None) -> None:
         """Train every segment on the complete dataset (no JudgeNode partitioning).
         JudgeNode routing still works at inference — clusters are built on the
         full dataset so all segments see the same data distribution during training."""
         if not self.segments:
             raise ValueError("Segments must be initialized before training. Call initializeAllSegments() first.")
 
+        pred_min, pred_max = self._resolve_prediction_bounds(dataset, prediction_range_cfg)
         self.display("Full-dataset training mode — all segments train on complete dataset.", Loud=loud)
         for segment in self.segments:
             self.display(f"Training segment {segment.segment_id} on {len(dataset)} rows...", Loud=loud)
             segment.train(dataset, epoch_count=epoch_count, preprocessor=self.preprocessor,
-                          lr_scale_cfg=lr_scale_cfg)
+                          lr_scale_cfg=lr_scale_cfg, pred_min=pred_min, pred_max=pred_max)
 
     def runInfer(self, input, loud = True, aggregation_mode: str = "bma", selection_percentage: float = .5):
         if self.JudgeNode is None or self.HandlerNode is None:

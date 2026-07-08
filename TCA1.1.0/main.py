@@ -176,6 +176,9 @@ def run_train(settings: Settings, logger) -> None:
     slr = t.get("scaled_learning_range", {})
     cfg.add_row("Scaled LR range",  f"{slr.get('min_lr_scale')}x – {slr.get('max_lr_scale')}x"
                                      if slr.get("enabled") else "disabled")
+    pr = d.get("prediction_range", {})
+    cfg.add_row("Prediction range", f"manual [{pr.get('min_value')}, {pr.get('max_value')}]"
+                                     if pr.get("mode") == "manual" else "auto (scanned from dataset)")
     console.print(cfg)
 
     # ── Warn about existing .nexseg files ─────────────────────────────────
@@ -226,7 +229,8 @@ def run_train(settings: Settings, logger) -> None:
     console.print(Rule("[bold green]Training[/bold green]"))
     if m["training_mode"] == "full":
         system.train_full(dataset, epoch_count=t["epoch_count"], loud=True,
-                          lr_scale_cfg=t.get("scaled_learning_range"))
+                          lr_scale_cfg=t.get("scaled_learning_range"),
+                          prediction_range_cfg=d.get("prediction_range"))
     else:
         system.train(dataset,
                      epoch_count=t["epoch_count"],
@@ -234,7 +238,8 @@ def run_train(settings: Settings, logger) -> None:
                      loud=True,
                      judge_min_clusters=t.get("judge_min_clusters"),
                      judge_max_clusters=t.get("judge_max_clusters"),
-                     lr_scale_cfg=t.get("scaled_learning_range"))
+                     lr_scale_cfg=t.get("scaled_learning_range"),
+                     prediction_range_cfg=d.get("prediction_range"))
 
     if out.get("save_posttrain_graph", True):
         _save_system_graph(system, out.get("posttrain_graph_path", "nexus_posttrain.png"),

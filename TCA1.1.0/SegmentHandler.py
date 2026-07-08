@@ -851,7 +851,8 @@ class SegmentHandler:
     # Public training entry point
     # ------------------------------------------------------------------
 
-    def train(self, dataset, epoch_count=3, preprocessor=None, lr_scale_cfg=None):
+    def train(self, dataset, epoch_count=3, preprocessor=None, lr_scale_cfg=None,
+              pred_min=None, pred_max=None):
         """
         Train the segment on a dataset.
 
@@ -869,6 +870,11 @@ class SegmentHandler:
                        so segments trained on fewer rows than the reference get a
                        larger effective LR and segments with more rows get a smaller
                        one — row count is read straight from this call's data.
+        pred_min, pred_max : optional resolved prediction-range bounds (from
+                       settings.dataset.prediction_range, already resolved from
+                       'auto'/'manual' by the caller). When given, they replace
+                       each processing node's default +/-PRED_CLIP guard so the
+                       propagated signal is clamped to the real target range.
         """
         import os
         import datetime as _dt
@@ -935,6 +941,15 @@ class SegmentHandler:
             if not splitter.signal_weights:
                 splitter.initialize_signal_weights(init_sample)
         self.display("  Node and splitter weights initialised.", classification=4)
+
+        # ── Prediction-range clip (overrides default +/-PRED_CLIP) ─────
+        if pred_min is not None and pred_max is not None:
+            for node in sc['processing_nodes']:
+                node.set_prediction_range(pred_min, pred_max)
+            self.display(
+                f"  Prediction clip set to [{pred_min}, {pred_max}].",
+                classification=4
+            )
 
         # ── Step 3: Per-epoch W→P→S training with LR decay ───────────
         self.display(

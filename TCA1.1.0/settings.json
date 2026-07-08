@@ -5,7 +5,12 @@
     "csv_path": "Exam_Score_Prediction.csv",
     "target_column": "exam_score",
     "ignored_columns": ["student_id"],
-    "shuffle": true
+    "shuffle": true,
+    "prediction_range": {
+      "mode": "auto",
+      "min_value": null,
+      "max_value": null
+    }
   },
 
   "model": {

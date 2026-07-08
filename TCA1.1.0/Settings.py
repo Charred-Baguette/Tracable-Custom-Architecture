@@ -19,6 +19,11 @@ _DEFAULTS = {
         "target_column": "exam_score",
         "ignored_columns": [],
         "shuffle": True,
+        "prediction_range": {
+            "mode": "auto",       # "auto" (scan dataset target column) or "manual"
+            "min_value": None,    # used when mode == "manual"
+            "max_value": None,    # used when mode == "manual"
+        },
     },
     "model": {
         "max_x": 20,
@@ -76,6 +81,7 @@ _DEFAULTS = {
 _VALID_MODES         = {"train", "infer", "compare"}
 _VALID_TRAINING_MODE = {"partitioned", "full"}
 _VALID_AGG_MODE      = {"bma", "simple_mean", "relevance_weighted"}
+_VALID_PRED_RANGE_MODE = {"auto", "manual"}
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -145,6 +151,19 @@ class Settings:
                 "settings.json: training.scaled_learning_range.min_lr_scale "
                 "must be <= max_lr_scale"
             )
+
+        pr = self._data["dataset"].get("prediction_range", {})
+        pr_mode = pr.get("mode", "auto")
+        if pr_mode not in _VALID_PRED_RANGE_MODE:
+            raise ValueError(f"settings.json: dataset.prediction_range.mode '{pr_mode}' not in {_VALID_PRED_RANGE_MODE}")
+        if pr_mode == "manual":
+            if pr.get("min_value") is None or pr.get("max_value") is None:
+                raise ValueError(
+                    "settings.json: dataset.prediction_range.mode is 'manual' but "
+                    "min_value/max_value are not both set"
+                )
+            if pr["min_value"] > pr["max_value"]:
+                raise ValueError("settings.json: dataset.prediction_range.min_value must be <= max_value")
 
     # ── Section accessors ────────────────────────────────────────────────
 
