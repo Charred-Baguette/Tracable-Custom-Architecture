@@ -45,6 +45,10 @@ _DEFAULTS = {
             "min_lr_scale": 0.5,
             "max_lr_scale": 3.0,
         },
+        "grad_clip": {
+            "mode": "auto",   # "auto" (derive from dataset.prediction_range span) or "manual"
+            "value": None,    # used when mode == "manual"
+        },
     },
     "logging": {
         "log_level": 4,
@@ -82,6 +86,7 @@ _VALID_MODES         = {"train", "infer", "compare"}
 _VALID_TRAINING_MODE = {"partitioned", "full"}
 _VALID_AGG_MODE      = {"bma", "simple_mean", "relevance_weighted"}
 _VALID_PRED_RANGE_MODE = {"auto", "manual"}
+_VALID_GRAD_CLIP_MODE = {"auto", "manual"}
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -164,6 +169,18 @@ class Settings:
                 )
             if pr["min_value"] > pr["max_value"]:
                 raise ValueError("settings.json: dataset.prediction_range.min_value must be <= max_value")
+
+        gc = self._data["training"].get("grad_clip", {})
+        gc_mode = gc.get("mode", "auto")
+        if gc_mode not in _VALID_GRAD_CLIP_MODE:
+            raise ValueError(f"settings.json: training.grad_clip.mode '{gc_mode}' not in {_VALID_GRAD_CLIP_MODE}")
+        if gc_mode == "manual":
+            if gc.get("value") is None:
+                raise ValueError(
+                    "settings.json: training.grad_clip.mode is 'manual' but value is not set"
+                )
+            if gc["value"] <= 0:
+                raise ValueError("settings.json: training.grad_clip.value must be > 0")
 
     # ── Section accessors ────────────────────────────────────────────────
 

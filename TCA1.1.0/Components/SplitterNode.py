@@ -8,9 +8,14 @@ class SplitterNode:
         self.Logger = Logger
         self.classification = classification
         self.feature_relevance_gradients = {}
-    
+        self.grad_clip = None  # per-instance override; falls back to 1.0 if unset
+
     def __repr__(self) -> str:
         return f"Splitter(pos={self.position})"
+
+    def set_grad_clip(self, value):
+        """Override the per-element gradient clip (defaults to 1.0)."""
+        self.grad_clip = value
     
     def display(self, message):
         message = f"[SplitterNode]: {message}"
@@ -69,7 +74,7 @@ class SplitterNode:
             d(scaled_delta_k)/d(rel_j) = value_j * w_j_k / (1 + dist_k)
             dL/d(rel_j) += dL_dpred_i * value_j * w_j_k / (1 + dist_k)
         """
-        GRAD_CLIP = 1.0
+        GRAD_CLIP = self.grad_clip if self.grad_clip is not None else 1.0
         for contrib in signal.path_contributions.values():
             scale = 1.0 / (1.0 + contrib['distance'])
             for feature, fd in contrib['feature_details'].items():

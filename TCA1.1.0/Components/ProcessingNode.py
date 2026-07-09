@@ -35,9 +35,17 @@ class ProcessingNode:
         self.position_gradient = [0.0] * len(position)
         self.pred_min = None   # per-instance override; falls back to -PRED_CLIP if unset
         self.pred_max = None   # per-instance override; falls back to  PRED_CLIP if unset
+        self.grad_clip = None  # per-instance override; falls back to GRAD_CLIP if unset
 
     def __repr__(self) -> str:
         return f"ProcessingNode(pos={self.position})"
+
+    def set_grad_clip(self, value):
+        """Override the per-element gradient clip (defaults to GRAD_CLIP)."""
+        self.grad_clip = value
+
+    def _grad_clip_bound(self):
+        return self.grad_clip if self.grad_clip is not None else self.GRAD_CLIP
 
     def set_prediction_range(self, min_value, max_value):
         """Override the propagated-prediction clip bounds (defaults to +/-PRED_CLIP)."""
@@ -273,14 +281,15 @@ class ProcessingNode:
 
         distance = contrib['distance']
         scale = 1.0 / (1.0 + distance)
+        gc = self._grad_clip_bound()
 
         for feature, fd in contrib['feature_details'].items():
             dL_dw = dL_dpred * fd['value'] * fd['relevance'] * scale
-            dL_dw = max(-self.GRAD_CLIP, min(self.GRAD_CLIP, dL_dw))  # Clip per-element gradient
+            dL_dw = max(-gc, min(gc, dL_dw))  # Clip per-element gradient
             self.weight_gradients[feature] = self.weight_gradients.get(feature, 0.0) + dL_dw
 
         dL_dw_pred = dL_dpred * contrib['prev_prediction'] * scale
-        dL_dw_pred = max(-self.GRAD_CLIP, min(self.GRAD_CLIP, dL_dw_pred))
+        dL_dw_pred = max(-gc, min(gc, dL_dw_pred))
         self.weight_gradients['input_prediction'] = self.weight_gradients.get('input_prediction', 0.0) + dL_dw_pred
 
     def accumulate_position_gradient(self, dL_dpred, signal):
@@ -291,13 +300,14 @@ class ProcessingNode:
 
         raw_delta = contrib['raw_delta']
         distance = contrib['distance']
+        gc = self._grad_clip_bound()
 
         for j, p in enumerate(self.position):
             if distance < 1e-9:
                 continue
             dscale_dpos = -p / (distance * (1.0 + distance) ** 2)
             grad_j = dL_dpred * raw_delta * dscale_dpos
-            grad_j = max(-self.GRAD_CLIP, min(self.GRAD_CLIP, grad_j))  # Clip
+            grad_j = max(-gc, min(gc, grad_j))  # Clip
             self.position_gradient[j] += grad_j
 
     def apply_weight_gradient(self, learning_rate):

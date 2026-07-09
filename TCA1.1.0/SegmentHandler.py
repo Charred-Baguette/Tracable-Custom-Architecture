@@ -356,6 +356,24 @@ class SegmentHandler:
     PLATEAU_THRESHOLD          = 3.0    # % — max test-error delta over 3 epochs to call plateau
     PLATEAU_POSITION_LR_SCALE  = 0.01   # scale lr_p by this factor once plateau detected
     LR_SCALE_REFERENCE_ROWS    = 2000   # row count WEIGHT_LR/POSITION_LR/SPLITTER_LR are tuned for
+    GRAD_CLIP_REFERENCE_ORDER  = 1      # order of magnitude (floor(log10(span))) GRAD_CLIP=1.0 is tuned for
+
+    @staticmethod
+    def _auto_grad_clip(pred_min, pred_max):
+        """Derive a gradient clip from the target range span, calibrated so a
+        ~2-digit span (e.g. the bundled exam-score dataset, span~=80) reproduces
+        today's fixed GRAD_CLIP=1.0, while a 3-digit span gets ~10x more clip
+        headroom (and a 1-digit span ~10x less) — since dL_dpred scales roughly
+        linearly with the target's magnitude, a fixed clip otherwise saturates
+        gradients for larger-scale targets and is needlessly loose for smaller ones.
+        Falls back to 1.0 when no usable range is available."""
+        if pred_min is None or pred_max is None:
+            return 1.0
+        span = abs(pred_max - pred_min)
+        if span <= 0:
+            return 1.0
+        order = math.floor(math.log10(span))
+        return 10.0 ** (order - SegmentHandler.GRAD_CLIP_REFERENCE_ORDER)
 
     # ------------------------------------------------------------------
     # Training-mode forward pass
@@ -852,7 +870,7 @@ class SegmentHandler:
     # ------------------------------------------------------------------
 
     def train(self, dataset, epoch_count=3, preprocessor=None, lr_scale_cfg=None,
-              pred_min=None, pred_max=None):
+              pred_min=None, pred_max=None, grad_clip_cfg=None):
         """
         Train the segment on a dataset.
 
@@ -875,6 +893,13 @@ class SegmentHandler:
                        'auto'/'manual' by the caller). When given, they replace
                        each processing node's default +/-PRED_CLIP guard so the
                        propagated signal is clamped to the real target range.
+        grad_clip_cfg : optional dict {'mode', 'value'} (settings.training.grad_clip).
+                       'manual' uses value directly; 'auto' derives a clip from the
+                       pred_min/pred_max span so the fixed default (tuned for a
+                       ~2-digit target range) scales automatically for larger or
+                       smaller target magnitudes instead of saturating gradients.
+                       Requires pred_min/pred_max to be set — otherwise falls back
+                       to each node's built-in GRAD_CLIP default.
         """
         import os
         import datetime as _dt
@@ -948,6 +973,21 @@ class SegmentHandler:
                 node.set_prediction_range(pred_min, pred_max)
             self.display(
                 f"  Prediction clip set to [{pred_min}, {pred_max}].",
+                classification=4
+            )
+
+        # ── Gradient clip (overrides default GRAD_CLIP) ─────────────────
+        if grad_clip_cfg:
+            if grad_clip_cfg.get('mode') == 'manual':
+                grad_clip = grad_clip_cfg.get('value')
+            else:
+                grad_clip = self._auto_grad_clip(pred_min, pred_max)
+            for node in sc['processing_nodes']:
+                node.set_grad_clip(grad_clip)
+            sc['splitter'].set_grad_clip(grad_clip)
+            self.display(
+                f"  Gradient clip set to {grad_clip:.4g} "
+                f"({grad_clip_cfg.get('mode')}).",
                 classification=4
             )
 

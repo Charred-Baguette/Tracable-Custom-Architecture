@@ -179,6 +179,9 @@ def run_train(settings: Settings, logger) -> None:
     pr = d.get("prediction_range", {})
     cfg.add_row("Prediction range", f"manual [{pr.get('min_value')}, {pr.get('max_value')}]"
                                      if pr.get("mode") == "manual" else "auto (scanned from dataset)")
+    gc = t.get("grad_clip", {})
+    cfg.add_row("Grad clip",        f"manual {gc.get('value')}"
+                                     if gc.get("mode") == "manual" else "auto (derived from prediction range)")
     console.print(cfg)
 
     # ── Warn about existing .nexseg files ─────────────────────────────────
@@ -230,7 +233,8 @@ def run_train(settings: Settings, logger) -> None:
     if m["training_mode"] == "full":
         system.train_full(dataset, epoch_count=t["epoch_count"], loud=True,
                           lr_scale_cfg=t.get("scaled_learning_range"),
-                          prediction_range_cfg=d.get("prediction_range"))
+                          prediction_range_cfg=d.get("prediction_range"),
+                          grad_clip_cfg=t.get("grad_clip"))
     else:
         system.train(dataset,
                      epoch_count=t["epoch_count"],
@@ -239,7 +243,8 @@ def run_train(settings: Settings, logger) -> None:
                      judge_min_clusters=t.get("judge_min_clusters"),
                      judge_max_clusters=t.get("judge_max_clusters"),
                      lr_scale_cfg=t.get("scaled_learning_range"),
-                     prediction_range_cfg=d.get("prediction_range"))
+                     prediction_range_cfg=d.get("prediction_range"),
+                     grad_clip_cfg=t.get("grad_clip"))
 
     if out.get("save_posttrain_graph", True):
         _save_system_graph(system, out.get("posttrain_graph_path", "nexus_posttrain.png"),
@@ -432,6 +437,7 @@ def run_compare(settings: Settings, logger) -> None:
 
     console = logger.console
     d = settings.dataset
+    t = settings.training
     c = settings.comparison
 
     console.print(Rule("[bold cyan]DragonChild v13 — Compare Mode[/bold cyan]"))
@@ -492,6 +498,9 @@ def run_compare(settings: Settings, logger) -> None:
         run_mlp        = c.get("run_mlp", True),
         run_system     = c.get("run_system", True),
         output_csv     = csv_path,
+        lr_scale_cfg   = t.get("scaled_learning_range"),
+        prediction_range_cfg = d.get("prediction_range"),
+        grad_clip_cfg  = t.get("grad_clip"),
     )
 
 

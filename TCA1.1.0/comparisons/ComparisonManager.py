@@ -127,7 +127,9 @@ class ComparisonManager:
 
     def _job_hash(self, dataset_path: str, target: str,
                   epoch_count: int, max_x_list: list, system_max_x_list: list,
-                  output_csv: str) -> str:
+                  output_csv: str, lr_scale_cfg: dict | None = None,
+                  prediction_range_cfg: dict | None = None,
+                  grad_clip_cfg: dict | None = None) -> str:
         key = json.dumps({
             "dataset":    dataset_path,
             "target":     target,
@@ -138,15 +140,23 @@ class ComparisonManager:
             # (e.g. comparison_results.csv vs segment_comparison_results.csv)
             # never share a checkpoint and silently reuse each other's results.
             "output_csv": output_csv,
+            # Also folded in — these change the actual training behavior/results,
+            # so a checkpoint from a run without them must not be reused silently.
+            "lr_scale_cfg": lr_scale_cfg,
+            "prediction_range_cfg": prediction_range_cfg,
+            "grad_clip_cfg": grad_clip_cfg,
         }, sort_keys=True)
         return hashlib.md5(key.encode()).hexdigest()[:12]
 
     def _init_checkpoint(self, dataset_path: str, target: str,
                          epoch_count: int, max_x_list: list, system_max_x_list: list,
-                         output_csv: str):
+                         output_csv: str, lr_scale_cfg: dict | None = None,
+                         prediction_range_cfg: dict | None = None,
+                         grad_clip_cfg: dict | None = None):
         """Load existing checkpoint if job params match; otherwise start fresh."""
         job_hash  = self._job_hash(dataset_path, target, epoch_count, max_x_list,
-                                    system_max_x_list, output_csv)
+                                    system_max_x_list, output_csv, lr_scale_cfg,
+                                    prediction_range_cfg, grad_clip_cfg)
         ckpt_path = f"comparison_checkpoint_{job_hash}.json"
         self._checkpoint_path = ckpt_path
 
@@ -174,6 +184,9 @@ class ComparisonManager:
                 "epoch_count":epoch_count,
                 "max_x":      sorted(max_x_list),
                 "system_max_x": sorted(system_max_x_list),
+                "lr_scale_cfg": lr_scale_cfg,
+                "prediction_range_cfg": prediction_range_cfg,
+                "grad_clip_cfg": grad_clip_cfg,
             },
             "completed_models": {},
         }
@@ -220,6 +233,9 @@ class ComparisonManager:
         run_xgb:        bool  = True,
         run_mlp:        bool  = True,
         output_csv:     str | None = None,
+        lr_scale_cfg:   dict | None = None,
+        prediction_range_cfg: dict | None = None,
+        grad_clip_cfg: dict | None = None,
     ):
         """
         Preprocess once, split once, run every enabled model, save CSV,
@@ -237,6 +253,15 @@ class ComparisonManager:
                          notebook other than the main system comparison, so its
                          runs never append to / collide with that file or its
                          checkpoint.
+        lr_scale_cfg  : optional {'enabled', 'min_lr_scale', 'max_lr_scale'} — forwarded
+                         to SegmentHandler/SystemHandler training exactly as in normal
+                         train mode (see settings.training.scaled_learning_range).
+        prediction_range_cfg : optional {'mode', 'min_value', 'max_value'} — forwarded
+                         to SegmentHandler/SystemHandler training exactly as in normal
+                         train mode (see settings.dataset.prediction_range).
+        grad_clip_cfg : optional {'mode', 'value'} — forwarded to SegmentHandler/
+                         SystemHandler training exactly as in normal train mode
+                         (see settings.training.grad_clip).
         """
         self._output_csv = output_csv or COMPARISON_CSV
         run_id = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -262,7 +287,8 @@ class ComparisonManager:
             agg_modes = list(system_aggregation_modes)
         dataset_path = dataset if isinstance(dataset, str) else "<DataFrame>"
         self._init_checkpoint(dataset_path, target, epoch_count, list(max_x_values),
-                               list(system_max_x_values), self._output_csv)
+                               list(system_max_x_values), self._output_csv,
+                               lr_scale_cfg, prediction_range_cfg, grad_clip_cfg)
 
         # ── Count total models for [X/N] tracking ─────────────────────
         self._model_total = (
@@ -363,6 +389,9 @@ class ComparisonManager:
                     lambda mx=mx: self._run_segment(
                         epoch_count=epoch_count,
                         max_x=mx,
+                        lr_scale_cfg=lr_scale_cfg,
+                        prediction_range_cfg=prediction_range_cfg,
+                        grad_clip_cfg=grad_clip_cfg,
                         **common,
                     ),
                 )
@@ -383,6 +412,9 @@ class ComparisonManager:
                             judge_max_clusters=system_judge_max_clusters,
                             aggregation_mode=agg,
                             selection_percentage=system_selection_percentage,
+                            lr_scale_cfg=lr_scale_cfg,
+                            prediction_range_cfg=prediction_range_cfg,
+                            grad_clip_cfg=grad_clip_cfg,
                             **common,
                         ),
                     )
@@ -459,7 +491,10 @@ class ComparisonManager:
             epoch_count=epoch_count,
         )
 
-    def _run_segment(self, epoch_count: int, max_x: int, **kw):
+    def _run_segment(self, epoch_count: int, max_x: int,
+                      lr_scale_cfg: dict | None = None,
+                      prediction_range_cfg: dict | None = None,
+                      grad_clip_cfg: dict | None = None, **kw):
         from comparisons.SegmentHandlerWrapper import SegmentHandlerWrapper
         wrapper = SegmentHandlerWrapper(max_x=max_x)
         return wrapper.run(
@@ -469,6 +504,9 @@ class ComparisonManager:
             target=kw['target'],
             epoch_count=epoch_count,
             logger=kw['logger'],
+            lr_scale_cfg=lr_scale_cfg,
+            prediction_range_cfg=prediction_range_cfg,
+            grad_clip_cfg=grad_clip_cfg,
         )
 
     def _run_system(
@@ -482,6 +520,9 @@ class ComparisonManager:
         judge_max_clusters:    int | None = None,
         aggregation_mode:      str   = "bma",
         selection_percentage:  float = 0.5,
+        lr_scale_cfg:          dict | None = None,
+        prediction_range_cfg: dict | None = None,
+        grad_clip_cfg:        dict | None = None,
         **kw,
     ):
         from comparisons.SystemHandlerWrapper import SystemHandlerWrapper
@@ -502,6 +543,9 @@ class ComparisonManager:
             target=kw['target'],
             epoch_count=epoch_count,
             logger=kw['logger'],
+            lr_scale_cfg=lr_scale_cfg,
+            prediction_range_cfg=prediction_range_cfg,
+            grad_clip_cfg=grad_clip_cfg,
         )
 
     # ── CSV persistence ───────────────────────────────────────────────────

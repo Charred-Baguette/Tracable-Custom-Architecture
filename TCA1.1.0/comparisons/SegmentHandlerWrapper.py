@@ -53,7 +53,10 @@ class SegmentHandlerWrapper:
 
     def run(self, train_records: list, test_records: list,
             feature_cols: list, target: str,
-            epoch_count: int = 20, logger=None) -> dict:
+            epoch_count: int = 20, logger=None,
+            lr_scale_cfg: dict | None = None,
+            prediction_range_cfg: dict | None = None,
+            grad_clip_cfg: dict | None = None) -> dict:
         """
         Reconstruct DataFrame → call SegmentHandler.train() → read metrics.
         Returns a dict compatible with ComparisonManager.
@@ -73,6 +76,15 @@ class SegmentHandlerWrapper:
         all_records = train_records + test_records
         df = pd.DataFrame(all_records)
 
+        # ── Resolve prediction-range clip (mirrors SystemHandler._resolve_prediction_bounds) ──
+        pred_min = pred_max = None
+        if prediction_range_cfg:
+            if prediction_range_cfg.get("mode") == "manual":
+                pred_min = prediction_range_cfg.get("min_value")
+                pred_max = prediction_range_cfg.get("max_value")
+            else:
+                pred_min, pred_max = float(df[target].min()), float(df[target].max())
+
         # ── Build and initialise segment ──────────────────────────────
         handler = SegmentHandler(
             maxX=self.max_x,
@@ -89,7 +101,8 @@ class SegmentHandlerWrapper:
         # ── Train (timed) ─────────────────────────────────────────────
         _log(f"Starting train() — max_x={self.max_x}, epochs={epoch_count}…")
         t0 = time.time()
-        handler.train(df, epoch_count=epoch_count)
+        handler.train(df, epoch_count=epoch_count, lr_scale_cfg=lr_scale_cfg,
+                      pred_min=pred_min, pred_max=pred_max, grad_clip_cfg=grad_clip_cfg)
         train_time = time.time() - t0
         _log(f"train() finished in {train_time:.1f}s")
 
@@ -132,7 +145,12 @@ class SegmentHandlerWrapper:
             'best_epoch':             seg_metrics.get('best_epoch', ''),
             'best_test_error_pct':    seg_metrics.get('best_test_error_pct', ''),
             'related_train_error_pct':seg_metrics.get('related_train_error_pct', ''),
-            'notes': f'max_x={self.max_x},dim={self.dimensions}',
+            'notes': (
+                f'max_x={self.max_x},dim={self.dimensions},'
+                f"lr_scale={'on' if lr_scale_cfg and lr_scale_cfg.get('enabled') else 'off'},"
+                f"pred_range={'manual' if prediction_range_cfg and prediction_range_cfg.get('mode') == 'manual' else ('auto' if prediction_range_cfg else 'off')},"
+                f"grad_clip={'manual' if grad_clip_cfg and grad_clip_cfg.get('mode') == 'manual' else ('auto' if grad_clip_cfg else 'off')}"
+            ),
         })
         return result
 

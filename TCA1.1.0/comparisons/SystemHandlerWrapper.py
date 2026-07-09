@@ -75,6 +75,9 @@ class SystemHandlerWrapper:
         target:        str,
         epoch_count:   int  = 20,
         logger=None,
+        lr_scale_cfg: dict | None = None,
+        prediction_range_cfg: dict | None = None,
+        grad_clip_cfg: dict | None = None,
     ) -> dict:
         """
         Build SystemHandler → initializeAllSegments → train (train split only)
@@ -123,7 +126,10 @@ class SystemHandlerWrapper:
         _log(f"Starting training — mode={self.training_mode}, epochs={epoch_count}…")
         t0 = time.perf_counter()
         if self.training_mode == "full":
-            system.train_full(train_df, epoch_count=epoch_count, loud=False)
+            system.train_full(train_df, epoch_count=epoch_count, loud=False,
+                              lr_scale_cfg=lr_scale_cfg,
+                              prediction_range_cfg=prediction_range_cfg,
+                              grad_clip_cfg=grad_clip_cfg)
         else:
             system.train(
                 train_df,
@@ -132,6 +138,9 @@ class SystemHandlerWrapper:
                 judge_iterations=self.judge_iterations,
                 judge_min_clusters=self.judge_min_clusters,
                 judge_max_clusters=self.judge_max_clusters,
+                lr_scale_cfg=lr_scale_cfg,
+                prediction_range_cfg=prediction_range_cfg,
+                grad_clip_cfg=grad_clip_cfg,
             )
         train_time = time.perf_counter() - t0
         _log(f"Training finished in {train_time:.2f}s")
@@ -183,7 +192,10 @@ class SystemHandlerWrapper:
                 f"max_x={self.max_x},"
                 f"dim={self.dimensions},"
                 f"segments={n_segs},"
-                f"mode={self.training_mode}"
+                f"mode={self.training_mode},"
+                f"lr_scale={'on' if lr_scale_cfg and lr_scale_cfg.get('enabled') else 'off'},"
+                f"pred_range={'manual' if prediction_range_cfg and prediction_range_cfg.get('mode') == 'manual' else ('auto' if prediction_range_cfg else 'off')},"
+                f"grad_clip={'manual' if grad_clip_cfg and grad_clip_cfg.get('mode') == 'manual' else ('auto' if grad_clip_cfg else 'off')}"
             ),
         })
         return result

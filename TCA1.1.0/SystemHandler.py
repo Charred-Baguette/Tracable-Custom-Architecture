@@ -102,7 +102,8 @@ class SystemHandler:
 
     def train(self, dataset, epoch_count: int = 5, judge_iterations: int = 10, loud: bool = True,
               judge_min_clusters: int | None = None, judge_max_clusters: int | None = None,
-              lr_scale_cfg: dict | None = None, prediction_range_cfg: dict | None = None) -> None:
+              lr_scale_cfg: dict | None = None, prediction_range_cfg: dict | None = None,
+              grad_clip_cfg: dict | None = None) -> None:
         from collections import defaultdict
         if not self.segments:
             raise ValueError("Segments must be initialized before training. Call initializeAllSegments() first.")
@@ -148,10 +149,12 @@ class SystemHandler:
             subset = dataset.iloc[indices].reset_index(drop=True)
             self.display(f"Training segment {segment.segment_id} on {len(subset)}/{len(dataset)} rows...", Loud=loud)
             segment.train(subset, epoch_count=epoch_count, preprocessor=self.preprocessor,
-                          lr_scale_cfg=lr_scale_cfg, pred_min=pred_min, pred_max=pred_max)
+                          lr_scale_cfg=lr_scale_cfg, pred_min=pred_min, pred_max=pred_max,
+                          grad_clip_cfg=grad_clip_cfg)
 
     def train_full(self, dataset, epoch_count: int = 5, loud: bool = True,
-                    lr_scale_cfg: dict | None = None, prediction_range_cfg: dict | None = None) -> None:
+                    lr_scale_cfg: dict | None = None, prediction_range_cfg: dict | None = None,
+                    grad_clip_cfg: dict | None = None) -> None:
         """Train every segment on the complete dataset (no JudgeNode partitioning).
         JudgeNode routing still works at inference — clusters are built on the
         full dataset so all segments see the same data distribution during training."""
@@ -163,7 +166,8 @@ class SystemHandler:
         for segment in self.segments:
             self.display(f"Training segment {segment.segment_id} on {len(dataset)} rows...", Loud=loud)
             segment.train(dataset, epoch_count=epoch_count, preprocessor=self.preprocessor,
-                          lr_scale_cfg=lr_scale_cfg, pred_min=pred_min, pred_max=pred_max)
+                          lr_scale_cfg=lr_scale_cfg, pred_min=pred_min, pred_max=pred_max,
+                          grad_clip_cfg=grad_clip_cfg)
 
     def runInfer(self, input, loud = True, aggregation_mode: str = "bma", selection_percentage: float = .5):
         if self.JudgeNode is None or self.HandlerNode is None:
