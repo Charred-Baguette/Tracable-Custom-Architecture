@@ -11,7 +11,7 @@ Most neural networks are black boxes: data goes in, a prediction comes out, and 
 
 The project is tested against a concrete benchmark — predicting student exam scores from a tabular dataset — and compared head-to-head against standard machine learning models (linear regression, random forest, gradient boosting, XGBoost, a small MLP, and a CNN) to see whether the added structure is actually worth its cost. The underlying architecture (TCA0.6.0, carried forward unchanged into TCA1.0.0) does not yet outperform a plain linear regression on this benchmark, but it shows the architecture's strengths — interpretability, modularity, and built-in uncertainty — clearly enough to be a promising foundation for tasks where those properties matter more than squeezing out the last bit of accuracy (e.g. anomaly or intrusion detection, sketched out in `TCA0.6.0/simulatedattackplan.txt`).
 
-**Status:** `TCA1.0.0` is the current, actively developed version — same Judge/Splitter/Processing/Reviewer/Handler architecture as TCA0.5.0/TCA0.6.0, repackaged as a proper deployable CLI (see below). `TCA0.5.0` and `TCA0.6.0` (plus `TCA0.6.0-Analysis`) remain as the prior reference line. Everything before `TCA0.5.0` (`TCA0.0.1`–`TCA0.4.0`, `TCA0.4.0-E`) is historical and kept for reference only.
+**Status:** `TCA1.1.1` is the current, actively developed version — same Judge/Splitter/Processing/Reviewer/Handler architecture as TCA0.5.0/TCA0.6.0/TCA1.0.0, with `settings.json`-driven training now covering row-count-scaled learning rates, and auto/manual clipping for both the backward-pass gradient (`grad_clip`) and the forward-pass per-hop prediction delta (`delta_clip`) — see [Evolution](#evolution-detailed-history) for what changed at each step. `TCA1.0.0` and `TCA1.1.0` remain as the immediately prior reference line, and `TCA0.5.0`/`TCA0.6.0` (plus `TCA0.6.0-Analysis`) as the line before that. Everything before `TCA0.5.0` (`TCA0.0.1`–`TCA0.4.0`, `TCA0.4.0-E`) is historical and kept for reference only.
 
 **License:** [MIT](LICENSE)
 
@@ -21,10 +21,10 @@ The project is tested against a concrete benchmark — predicting student exam s
 pip install -r requirements.txt
 ```
 
-**TCA1.0.0 (current):** everything is driven from `TCA1.0.0/settings.json` through a single CLI entry point — no notebook or hand-written script required.
+**TCA1.1.1 (current):** everything is driven from `TCA1.1.1/settings.json` through a single CLI entry point — no notebook or hand-written script required.
 
 ```bash
-cd TCA1.0.0
+cd TCA1.1.1
 python main.py                 # interactive: prompts for train / infer / compare
 python main.py --mode train    # train a fresh set of segments, save .nexseg files + graphs
 python main.py --mode infer    # load saved .nexseg segments and evaluate a sample
@@ -48,7 +48,7 @@ Open the evaluation notebooks in `TCA0.6.0-Analysis/` (`v12Analysis.ipynb`, `Seg
 
 ## How it works
 
-TCA0.6.0/TCA1.0.0 share the same reference architecture (TCA1.0.0 changes packaging, not the math — see [Evolution](#evolution-detailed-history)). A prediction flows through five stages:
+TCA0.6.0/TCA1.0.0/TCA1.1.0/TCA1.1.1 share the same reference architecture (TCA1.0.0 changed packaging, not the math; TCA1.1.0/TCA1.1.1 added configurable training-dynamics knobs on top — see [Evolution](#evolution-detailed-history)). A prediction flows through five stages:
 
 1. **PreProcessingNode** — tokenizes/normalizes the raw dataset.
 2. **JudgeNode** — k-means clusters the input space into segments and routes each sample to the most relevant segment(s).
@@ -60,7 +60,7 @@ TCA0.6.0/TCA1.0.0 share the same reference architecture (TCA1.0.0 changes packag
 
 ## Analysis
 
-`TCA1.0.0`'s `compare` mode (`python main.py --mode compare`) runs the same benchmarking sweep as `TCA0.6.0-Analysis/` — `SegmentHandler`/`SystemHandler` against Linear Regression, KNN, Random Forest, XGBoost, MLP, and (optionally) a CNN — via `comparisons/ComparisonManager.py`, appending results to `comparison_results.csv`. No TCA1.0.0 benchmark run has been published yet, so the numbers below are still TCA0.6.0's; treat them as the last known baseline until TCA1.0.0 is re-run.
+`TCA1.1.1`'s `compare` mode (`python main.py --mode compare`) runs the same benchmarking sweep as `TCA0.6.0-Analysis/` — `SegmentHandler`/`SystemHandler` against Linear Regression, KNN, Random Forest, XGBoost, MLP, and (optionally) a CNN — via `comparisons/ComparisonManager.py`, appending results to `comparison_results.csv`. No TCA1.0.0/TCA1.1.0/TCA1.1.1 benchmark run has been published yet, so the numbers below are still TCA0.6.0's; treat them as the last known baseline until TCA1.1.1 is re-run. Note that comparison-mode runs through TCA1.1.0 never applied `dataset.ignored_columns`/`dataset.shuffle` (train mode did) — a gap fixed in TCA1.1.1 — so any pre-TCA1.1.1 comparison numbers on a dataset with target-derived columns or a non-random row order should be treated with the same caution as the TCA0.4.0 leak below.
 
 The `TCA0.6.0-Analysis/` folder is the benchmarking and evaluation harness for TCA0.6.0 and is the source of truth for the performance claims below:
 
@@ -95,7 +95,9 @@ The `TCA0.6.0-Analysis/` folder is the benchmarking and evaluation harness for T
 | **TCA0.5.0** | First fully-wired System Handler with `JudgeNode` k-means clustering for unsupervised segment/cluster discovery and BMA (Bayesian model averaging) aggregation across segments, with a rich `Reports.txt` output (MAE 11.86, R² 0.373 on the exam-score task). |
 | **TCA0.6.0** | Same System Handler design as TCA0.5.0, **with the TCA0.4.0 target-leakage bug fixed** (`SegmentHandler` now strips the target column before the forward pass). Modest accuracy improvement over TCA0.5.0 (MAE 10.26, R² 0.546, see `TCA0.6.0/v12 reports.txt`). Also includes `TCA0.6.0/simulatedattackplan.txt`, a forward-looking design doc for repurposing the architecture as an adversarial network-intrusion detector (not yet implemented). |
 | **TCA0.6.0-Analysis** | A self-contained analysis copy of TCA0.6.0 (own `Components/`, `SegmentHandler.py`, `SystemHandler.py`, `comparisons/`) used purely for evaluation — see Analysis above. |
-| **TCA1.0.0** *(current)* | A deployment refactor, not an architecture change: `Components/` (Processing/Splitter/Reviewer/Handler nodes) and `SegmentHandler.py` are byte-identical to TCA0.6.0; `JudgeNode` only gains a fixed random seed for reproducible clustering. What's new is everything around the model — a single `settings.json` config (validated by a new `Settings.py` loader with sane defaults), a unified `main.py` CLI with `train` / `infer` / `compare` modes and a Rich-console UI, `.nexseg` segment persistence so `infer` mode can evaluate samples without retraining, a slimmed-down `SystemHandler` (558 → 185 lines) built via `SystemHandler.from_settings(...)`, and an XGBoost baseline added to `comparisons/`. |
+| **TCA1.0.0** | A deployment refactor, not an architecture change: `Components/` (Processing/Splitter/Reviewer/Handler nodes) and `SegmentHandler.py` are byte-identical to TCA0.6.0; `JudgeNode` only gains a fixed random seed for reproducible clustering. What's new is everything around the model — a single `settings.json` config (validated by a new `Settings.py` loader with sane defaults), a unified `main.py` CLI with `train` / `infer` / `compare` modes and a Rich-console UI, `.nexseg` segment persistence so `infer` mode can evaluate samples without retraining, a slimmed-down `SystemHandler` (558 → 185 lines) built via `SystemHandler.from_settings(...)`, and an XGBoost baseline added to `comparisons/`. |
+| **TCA1.1.0** | Adds three `settings.json`-driven training-dynamics knobs on top of TCA1.0.0's architecture: `training.scaled_learning_range` (row-count-scaled learning rate — segments trained on fewer rows than a 2000-row reference get a proportionally larger effective LR, clamped to `[min_lr_scale, max_lr_scale]`), `dataset.prediction_range` (`auto`/`manual` clip on the propagated prediction, replacing each node's generous default `±1e6` guard with the real target range), and `training.grad_clip` (`auto`/`manual` — auto mode derives the backward-pass gradient clip from the target range's order of magnitude, so the old fixed `GRAD_CLIP=1.0` — tuned for a ~2-digit target range — doesn't saturate gradients for larger-scale targets). All three were wired into `train` mode only; `compare` mode's `ComparisonManager`/wrappers didn't accept or forward any of them yet. |
+| **TCA1.1.1** *(current)* | Two fixes on top of TCA1.1.0, no architecture change. **(1)** `compare` mode never applied `dataset.ignored_columns` or `dataset.shuffle` the way `train` mode did, and used a hardcoded 80/20 positional split — on a dataset with target-derived columns and/or non-random row order (e.g. sorted by the label), this leaks the target into every comparison model's features and skews the train/test split, similar in spirit to the TCA0.4.0 leak below. `ComparisonManager`/`SegmentHandlerWrapper`/`SystemHandlerWrapper` now accept and forward `ignored_columns`, `shuffle` (+ fixed seed), `test_split`, and the segment topology params (`connection_percentage`, `density`) exactly as `train` mode does, folded into the comparison checkpoint hash so stale checkpoints aren't silently reused. **(2)** Adds `training.delta_clip` (`auto`/`manual`, mirroring `grad_clip`): `ProcessingNode.DELTA_CLIP` — the cap on how much a single node hop can move a signal's prediction, applied on every forward pass — was a hardcoded `10.0` untouched by any of TCA1.1.0's target-range-aware clipping, capping how far predictions could climb from their `0.0` start regardless of target magnitude. Auto mode instead derives the clip from the segment's actual hop topology (target span ÷ `num_processing_nodes ** (1/dimensions)`, i.e. the number of shells a signal must cross from splitter to reviewer), since this clip acts directly on the propagated prediction rather than a learning-rate-buffered gradient like `grad_clip`. |
 
 ## Other folders
 
