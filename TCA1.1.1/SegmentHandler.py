@@ -5,6 +5,7 @@ from Components.Signal import Signal
 from Components.ReviewerNode import ReviewerNode
 import math
 import itertools
+import random
 
 class SegmentHandler:
     def __init__(self, maxX, segmentComponents = None, target='exam_score', logger = None, connection_percentage=.08, density = .95, dimensions = 2, classification = 1, segment_id = 0):
@@ -356,6 +357,8 @@ class SegmentHandler:
     PLATEAU_POSITION_LR_SCALE  = 0.01   # scale lr_p by this factor once plateau detected
     LR_SCALE_REFERENCE_ROWS    = 2000   # row count WEIGHT_LR/POSITION_LR/SPLITTER_LR are tuned for
     GRAD_CLIP_REFERENCE_ORDER  = 1      # order of magnitude (floor(log10(span))) GRAD_CLIP=1.0 is tuned for
+    EVAL_SEED                  = 42     # fixed RNG seed for test-set evaluation forward passes (matches
+                                         # the seed already used elsewhere in the codebase for reproducibility)
 
     @staticmethod
     def _auto_grad_clip(pred_min, pred_max):
@@ -697,20 +700,37 @@ class SegmentHandler:
     def _eval_test_predictions(self, test_list):
         """Return (predictions, actuals) lists for every test sample that
         produces at least one reviewer prediction.  Uses the training forward
-        pass (no gradients applied) to avoid progress-bar overhead."""
-        predictions, actuals = [], []
-        for sample in test_list:
-            target_val = sample.get(self.target)
-            if target_val is None:
-                continue
-            features = {k: v for k, v in sample.items() if k != self.target}
-            _, reviewer_data = self._forward_segment(features)
-            preds = [pred for _, _, pred in reviewer_data if pred is not None]
-            if not preds:
-                continue
-            predictions.append(sum(preds) / len(preds))
-            actuals.append(float(target_val))
-        return predictions, actuals
+        pass (no gradients applied) to avoid progress-bar overhead.
+
+        ProcessingNode.forward_signal() routes each hop via random.choices(),
+        so the forward pass is stochastic. random.seed(42) at import time only
+        fixes the *starting* point of the global RNG stream — by the time this
+        is called mid-training vs. after restoring a saved segment for the
+        final report, a different number of prior random draws have already
+        consumed that stream, so the same model can route differently and
+        score differently each time. Snapshotting/reseeding/restoring the RNG
+        state around this call makes every evaluation of a given model draw
+        from the same fixed point, so the same model always scores the same,
+        without disturbing training's own random sequence.
+        """
+        rng_state = random.getstate()
+        random.seed(self.EVAL_SEED)
+        try:
+            predictions, actuals = [], []
+            for sample in test_list:
+                target_val = sample.get(self.target)
+                if target_val is None:
+                    continue
+                features = {k: v for k, v in sample.items() if k != self.target}
+                _, reviewer_data = self._forward_segment(features)
+                preds = [pred for _, _, pred in reviewer_data if pred is not None]
+                if not preds:
+                    continue
+                predictions.append(sum(preds) / len(preds))
+                actuals.append(float(target_val))
+            return predictions, actuals
+        finally:
+            random.setstate(rng_state)
 
     def _run_final_test_eval(self, best_epoch, test_list, epoch_history=None,
                              best_test_err=None, n_train=0, epoch_count=0):
@@ -958,6 +978,13 @@ class SegmentHandler:
             'splitter': {
                 'position': list(sc['splitter'].position),
                 'signal_weights': sc['splitter'].signal_weights,
+                # Splitter connectivity is fixed once at initializeSegment() time
+                # (based on nodes' pre-training positions) and never recomputed as
+                # nodes move during training, so it must be saved as-is rather than
+                # recomputed from final positions on restore — recomputing would
+                # wire the splitter to a different set of nodes than it actually
+                # used live.
+                'connected_positions': [list(n.position) for n in sc['splitter'].connected_nodes],
             },
             'reviewers': [list(rev.position) for rev in sc['reviewer']],
             'processing_nodes': [
@@ -1407,8 +1434,20 @@ class SegmentHandler:
                 if target_node is not None:
                     node.connected_nodes.append(target_node)
 
-        # Splitter → nearest processing nodes
-        splitter.calculate_nearest_neighbors(processing_nodes)
+        # Splitter → processing nodes it was actually connected to live.
+        # calculate_nearest_neighbors() is deliberately NOT used here: it would
+        # recompute connectivity from these nodes' final (trained) positions,
+        # which can differ from the fixed set the splitter routed to throughout
+        # training (see initializeSegment() — splitter connectivity is set once,
+        # pre-training, and never updated as nodes move).
+        if 'connected_positions' in spl:
+            splitter.connected_nodes = [
+                pos_to_node[tuple(cpos)] for cpos in spl['connected_positions']
+                if tuple(cpos) in pos_to_node
+            ]
+        else:
+            # Older .nexseg files saved before this fix — best-effort fallback.
+            splitter.calculate_nearest_neighbors(processing_nodes)
 
         # Restore the forward-pass clipping config train() applied, so this
         # restored segment behaves identically to the live one it was saved from.
