@@ -745,8 +745,9 @@ class SegmentHandler:
         ss_tot  = sum((a - mean_a) ** 2 for a in actuals)
         ss_res  = sum((p - a) ** 2 for p, a in zip(predictions, actuals))
         r2      = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
-        mape    = sum(abs(p - a) / abs(a) * 100.0
-                      for p, a in zip(predictions, actuals) if a != 0) / n
+        mape_terms = [abs(p - a) / abs(a) * 100.0
+                      for p, a in zip(predictions, actuals) if a != 0]
+        mape    = sum(mape_terms) / len(mape_terms) if mape_terms else float('nan')
 
         # Within-threshold accuracy
         def _within(pct):
@@ -936,11 +937,24 @@ class SegmentHandler:
         if filename is None:
             filename = f"segment_{self.segment_id}.nexseg"
         sc = self.segmentComponents
+        # pred_min/pred_max/delta_clip are applied uniformly to every processing
+        # node by train() (see set_prediction_range/set_delta_clip calls), so any
+        # node's value represents the whole segment's config.
+        first_node = sc['processing_nodes'][0] if sc['processing_nodes'] else None
         state = {
             'segment_id': self.segment_id,
             'max_x': self.max_x,
             'dimensions': self.dimensions,
             'target': self.target,
+            # Persisted so load_nexseg() reproduces the exact forward-pass clipping
+            # used during training — without these, a restored segment silently
+            # falls back to ProcessingNode's class defaults (effectively unclamped
+            # predictions), which can score differently than the live epoch it
+            # was saved from.
+            'pred_min':   first_node.pred_min   if first_node else None,
+            'pred_max':   first_node.pred_max   if first_node else None,
+            'delta_clip': first_node.delta_clip if first_node else None,
+            'grad_clip':  sc['splitter'].grad_clip,
             'splitter': {
                 'position': list(sc['splitter'].position),
                 'signal_weights': sc['splitter'].signal_weights,
@@ -1144,12 +1158,13 @@ class SegmentHandler:
 
         prev_loss          = float('inf')
         has_prog           = hasattr(self.logger, 'make_progress')
-        epoch_history      = []   # [{epoch, loss, errors, test_avg_error, plateau}]
+        epoch_history      = []   # [{epoch, loss, errors, test_avg_error, test_r2, test_f1, plateau}]
         best_epoch         = None
-        best_test_err      = float('inf')
+        best_test_r2       = float('-inf')
+        best_test_err      = float('nan')
 
         def _run_epochs(progress=None, epoch_task=None):
-            nonlocal prev_loss, best_epoch, best_test_err
+            nonlocal prev_loss, best_epoch, best_test_r2, best_test_err
             for epoch in range(epoch_count):
                 cur_scale = lr_max_scale * lr_decay ** epoch
                 if lr_min_scale is not None:
@@ -1208,16 +1223,17 @@ class SegmentHandler:
                     'plateau': plateau
                 })
 
-                # ── Track best by lowest test average error, save when improved ─
+                # ── Track best by highest test R² (regression fit quality), save when improved ─
                 valid_errs  = [v for v in epoch_errs.values() if not math.isnan(v)]
                 avg_err     = sum(valid_errs) / len(valid_errs) if valid_errs else float('nan')
-                if not math.isnan(test_avg_err) and test_avg_err < best_test_err:
+                if not math.isnan(test_r2) and test_r2 > best_test_r2:
+                    best_test_r2  = test_r2
                     best_test_err = test_avg_err
                     best_epoch    = epoch + 1
                     nexseg_path   = self._save_nexseg()
                     self.display(
                         f"{tag} | New best — train={avg_err:.2f}%  test={test_avg_err:.2f}%  "
-                        f"saved → {nexseg_path}",
+                        f"R²={test_r2:.4f}  saved → {nexseg_path}",
                         classification=4
                     )
 
@@ -1300,7 +1316,7 @@ class SegmentHandler:
         if best_epoch is not None:
             self.display(
                 f"Training complete. Best epoch: {best_epoch}  |  "
-                f"Best test error: {best_test_err:.2f}%  "
+                f"Best R²: {best_test_r2:.4f}  |  Test error: {best_test_err:.2f}%  "
                 f"|  Saved → segment_{self.segment_id}.nexseg",
                 classification=4
             )
@@ -1393,6 +1409,23 @@ class SegmentHandler:
 
         # Splitter → nearest processing nodes
         splitter.calculate_nearest_neighbors(processing_nodes)
+
+        # Restore the forward-pass clipping config train() applied, so this
+        # restored segment behaves identically to the live one it was saved from.
+        pred_min   = state.get('pred_min')
+        pred_max   = state.get('pred_max')
+        delta_clip = state.get('delta_clip')
+        grad_clip  = state.get('grad_clip')
+        if pred_min is not None and pred_max is not None:
+            for node in processing_nodes:
+                node.set_prediction_range(pred_min, pred_max)
+        if delta_clip is not None:
+            for node in processing_nodes:
+                node.set_delta_clip(delta_clip)
+        if grad_clip is not None:
+            for node in processing_nodes:
+                node.set_grad_clip(grad_clip)
+            splitter.set_grad_clip(grad_clip)
 
         handler.segmentComponents = {
             'splitter':          splitter,
@@ -1495,12 +1528,9 @@ if __name__ == "__main__":
 
     # ── Best epoch summary (training path only) ───────────────────────
     if epoch_history:
-        best_e = min(
+        best_e = max(
             epoch_history,
-            key=lambda e: (
-                sum(v for v in e['errors'].values() if not _math.isnan(v)) /
-                max(1, sum(1 for v in e['errors'].values() if not _math.isnan(v)))
-            )
+            key=lambda e: e['test_r2'] if not _math.isnan(e.get('test_r2', float('nan'))) else float('-inf')
         )
         best_train_vals = [v for v in best_e['errors'].values() if not _math.isnan(v)]
         best_train_avg  = sum(best_train_vals) / len(best_train_vals) if best_train_vals else float('nan')
