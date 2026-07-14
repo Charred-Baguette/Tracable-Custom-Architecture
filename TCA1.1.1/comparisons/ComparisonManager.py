@@ -288,9 +288,9 @@ class ComparisonManager:
                          notebook other than the main system comparison, so its
                          runs never append to / collide with that file or its
                          checkpoint.
-        lr_scale_cfg  : optional {'enabled', 'min_lr_scale', 'max_lr_scale'} — forwarded
-                         to SegmentHandler/SystemHandler training exactly as in normal
-                         train mode (see settings.training.scaled_learning_range).
+        lr_scale_cfg  : optional {'mode', 'min_lr_scale', 'max_lr_scale', 'decay'} —
+                         forwarded to SegmentHandler/SystemHandler training exactly
+                         as in normal train mode (see settings.training.learning_rate).
         prediction_range_cfg : optional {'mode', 'min_value', 'max_value'} — forwarded
                          to SegmentHandler/SystemHandler training exactly as in normal
                          train mode (see settings.dataset.prediction_range).

@@ -7,9 +7,9 @@
     "ignored_columns": ["student_id"],
     "shuffle": true,
     "prediction_range": {
-      "mode": "auto",
-      "min_value": null,
-      "max_value": null
+      "mode": "manual",
+      "min_value": 0,
+      "max_value": 100
     }
   },
 
@@ -29,18 +29,19 @@
     "judge_min_clusters": 4,
     "judge_max_clusters": 20,
     "test_split": 0.2,
-    "scaled_learning_range": {
-      "enabled": false,
+    "learning_rate": {
+      "mode": "auto",
       "min_lr_scale": 0.5,
-      "max_lr_scale": 3.0
+      "max_lr_scale": 3.0,
+      "decay": null
     },
     "grad_clip": {
-      "mode": "auto",
-      "value": null
+      "mode": "manual",
+      "value": 1
     },
     "delta_clip": {
-      "mode": "auto",
-      "value": null
+      "mode": "manual",
+      "value": 10
     }
   },
 

@@ -352,7 +352,6 @@ class SegmentHandler:
     SPLITTER_LR                = 0.01
     MAX_POSITION_STEP          = 2.0
     CONVERGENCE_THRESHOLD      = 1e-4
-    LR_DECAY                   = 0.85   # multiply all LRs by this factor each epoch
     PLATEAU_THRESHOLD          = 3.0    # % — max test-error delta over 3 epochs to call plateau
     PLATEAU_POSITION_LR_SCALE  = 0.01   # scale lr_p by this factor once plateau detected
     LR_SCALE_REFERENCE_ROWS    = 2000   # row count WEIGHT_LR/POSITION_LR/SPLITTER_LR are tuned for
@@ -404,6 +403,61 @@ class SegmentHandler:
             return ProcessingNode.DELTA_CLIP
         hops = max(1, math.ceil(num_nodes ** (1.0 / max(self.dimensions, 1))))
         return span / hops
+
+    def _resolve_lr_schedule(self, lr_cfg, train_rows, epoch_count):
+        """Resolve the per-epoch LR multiplier trajectory from settings.training.learning_rate.
+
+        Returns (max_lr_scale, min_lr_scale, decay) such that:
+            lr_scale(epoch) = max_lr_scale * decay ** epoch
+        floored at min_lr_scale each epoch (min_lr_scale=None means no floor —
+        only 'manual-full' leaves the curve unclamped).
+
+        'auto'         : max_lr_scale = clip(LR_SCALE_REFERENCE_ROWS / train_rows,
+                          min_lr_scale, max_lr_scale) — the existing row-count
+                          formula (WEIGHT_LR/POSITION_LR/SPLITTER_LR are tuned
+                          for LR_SCALE_REFERENCE_ROWS rows; fewer rows means
+                          fewer per-sample updates per epoch, so the LR is
+                          scaled up to compensate, and vice versa). min_lr_scale/
+                          max_lr_scale here are just clamp bounds on that ratio.
+                          min_lr_scale for the curve floor is then set to
+                          0.05 * max_lr_scale, and decay is solved so the curve
+                          reaches that floor exactly on the last epoch.
+        'manual-scale' : min_lr_scale/max_lr_scale are the curve's literal
+                          endpoints; decay is still solved from epoch_count the
+                          same way as 'auto'.
+        'manual-full'  : max_lr_scale and decay are both literal; no floor.
+        """
+        lr_cfg = lr_cfg or {'mode': 'auto', 'min_lr_scale': 0.5, 'max_lr_scale': 3.0}
+        mode = lr_cfg.get('mode', 'auto')
+
+        def _solve_decay(max_scale, min_scale):
+            if epoch_count <= 1 or max_scale <= 0 or min_scale <= 0:
+                return 1.0
+            return (min_scale / max_scale) ** (1.0 / (epoch_count - 1))
+
+        if mode == 'manual-full':
+            max_scale = lr_cfg.get('max_lr_scale') or 1.0
+            decay     = lr_cfg.get('decay')
+            if decay is None:
+                decay = 1.0
+            return max_scale, None, decay
+
+        if mode == 'manual-scale':
+            max_scale = lr_cfg.get('max_lr_scale', 1.0)
+            min_scale = lr_cfg.get('min_lr_scale', max_scale)
+            decay     = _solve_decay(max_scale, min_scale)
+            return max_scale, min_scale, decay
+
+        # auto
+        floor   = lr_cfg.get('min_lr_scale', 0.5)
+        ceiling = lr_cfg.get('max_lr_scale', 3.0)
+        if train_rows:
+            max_scale = min(max(self.LR_SCALE_REFERENCE_ROWS / train_rows, floor), ceiling)
+        else:
+            max_scale = ceiling
+        min_scale = 0.05 * max_scale
+        decay     = _solve_decay(max_scale, min_scale)
+        return max_scale, min_scale, decay
 
     # ------------------------------------------------------------------
     # Training-mode forward pass
@@ -943,12 +997,14 @@ class SegmentHandler:
                        full dataset). When provided the segment uses the same
                        vocabulary as inference, preventing encoding mismatches.
                        If None a new preprocessor is created and fitted locally.
-        lr_scale_cfg : optional dict {'enabled', 'min_lr_scale', 'max_lr_scale'}.
-                       When enabled, WEIGHT_LR/POSITION_LR/SPLITTER_LR are scaled by
-                       clip(LR_SCALE_REFERENCE_ROWS / len(training rows), min, max),
-                       so segments trained on fewer rows than the reference get a
-                       larger effective LR and segments with more rows get a smaller
-                       one — row count is read straight from this call's data.
+        lr_scale_cfg : optional dict {'mode', 'min_lr_scale', 'max_lr_scale', 'decay'}
+                       (settings.training.learning_rate). WEIGHT_LR/POSITION_LR/
+                       SPLITTER_LR are multiplied every epoch by a shared trajectory
+                       lr_scale(epoch) = max_lr_scale * decay ** epoch (floored at
+                       min_lr_scale, except in 'manual-full'). See
+                       _resolve_lr_schedule() for how 'auto' / 'manual-scale' /
+                       'manual-full' each resolve max_lr_scale/min_lr_scale/decay —
+                       row count is read straight from this call's data.
         pred_min, pred_max : optional resolved prediction-range bounds (from
                        settings.dataset.prediction_range, already resolved from
                        'auto'/'manual' by the caller). When given, they replace
@@ -1012,18 +1068,18 @@ class SegmentHandler:
             classification=4
         )
 
-        # ── Row-count-scaled learning rate ─────────────────────────────
-        lr_scale = 1.0
-        if lr_scale_cfg and lr_scale_cfg.get('enabled') and sample_list:
-            lr_scale = min(max(
-                self.LR_SCALE_REFERENCE_ROWS / len(sample_list),
-                lr_scale_cfg.get('min_lr_scale', 1.0)),
-                lr_scale_cfg.get('max_lr_scale', 1.0))
-            self.display(
-                f"  Scaled learning range enabled: {len(sample_list)} training rows "
-                f"vs. reference {self.LR_SCALE_REFERENCE_ROWS} → lr_scale={lr_scale:.3f}",
-                classification=4
-            )
+        # ── Learning-rate trajectory (auto / manual-scale / manual-full) ─
+        lr_max_scale, lr_min_scale, lr_decay = self._resolve_lr_schedule(
+            lr_scale_cfg, len(sample_list), epoch_count
+        )
+        self.display(
+            f"  Learning rate mode={ (lr_scale_cfg or {}).get('mode', 'auto') }: "
+            f"max_scale={lr_max_scale:.3f}  "
+            f"min_scale={'—' if lr_min_scale is None else f'{lr_min_scale:.3f}'}  "
+            f"decay={lr_decay:.4f}  ({len(sample_list)} training rows, "
+            f"reference={self.LR_SCALE_REFERENCE_ROWS}).",
+            classification=4
+        )
 
         # ── Step 2: Initialise weights ────────────────────────────────
         self.display("Training Step 2: Initialising node weights.", classification=4)
@@ -1095,9 +1151,11 @@ class SegmentHandler:
         def _run_epochs(progress=None, epoch_task=None):
             nonlocal prev_loss, best_epoch, best_test_err
             for epoch in range(epoch_count):
-                decay = self.LR_DECAY ** epoch
-                lr_w  = self.WEIGHT_LR   * decay * lr_scale
-                lr_s  = self.SPLITTER_LR * decay * lr_scale
+                cur_scale = lr_max_scale * lr_decay ** epoch
+                if lr_min_scale is not None:
+                    cur_scale = max(cur_scale, lr_min_scale)
+                lr_w = self.WEIGHT_LR   * cur_scale
+                lr_s = self.SPLITTER_LR * cur_scale
 
                 # ── Plateau detection over last 3 test errors ─────────
                 plateau = False
@@ -1107,13 +1165,13 @@ class SegmentHandler:
                     if len(last3) == 3:
                         plateau = (max(last3) - min(last3)) < self.PLATEAU_THRESHOLD
 
-                lr_p = self.POSITION_LR * decay * lr_scale * (
+                lr_p = self.POSITION_LR * cur_scale * (
                     self.PLATEAU_POSITION_LR_SCALE if plateau else 1.0
                 )
                 tag  = f"Epoch {epoch + 1}/{epoch_count}"
 
                 self.display(
-                    f"{tag} | decay={decay:.4f}  lr_w={lr_w:.5f}  "
+                    f"{tag} | lr_scale={cur_scale:.4f}  lr_w={lr_w:.5f}  "
                     f"lr_p={lr_p:.6f}  lr_s={lr_s:.5f}"
                     + ("  [PLATEAU — connections frozen]" if plateau else ""),
                     classification=4

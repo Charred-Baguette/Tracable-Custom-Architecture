@@ -173,9 +173,12 @@ def run_train(settings: Settings, logger) -> None:
     cfg.add_row("Judge iterations", str(t["judge_iterations"]))
     cfg.add_row("Judge clusters",   f"{t.get('judge_min_clusters', '?')} – {t.get('judge_max_clusters', '?')}")
     cfg.add_row("Test split",       f"{int(t.get('test_split', 0.2) * 100)}%")
-    slr = t.get("scaled_learning_range", {})
-    cfg.add_row("Scaled LR range",  f"{slr.get('min_lr_scale')}x – {slr.get('max_lr_scale')}x"
-                                     if slr.get("enabled") else "disabled")
+    lr = t.get("learning_rate", {})
+    lr_mode = lr.get("mode", "auto")
+    if lr_mode == "manual-full":
+        cfg.add_row("Learning rate",    f"manual-full: start={lr.get('max_lr_scale')}x  decay={lr.get('decay')}")
+    else:
+        cfg.add_row("Learning rate",    f"{lr_mode}: {lr.get('min_lr_scale')}x – {lr.get('max_lr_scale')}x")
     pr = d.get("prediction_range", {})
     cfg.add_row("Prediction range", f"manual [{pr.get('min_value')}, {pr.get('max_value')}]"
                                      if pr.get("mode") == "manual" else "auto (scanned from dataset)")
@@ -235,7 +238,7 @@ def run_train(settings: Settings, logger) -> None:
     console.print(Rule("[bold green]Training[/bold green]"))
     if m["training_mode"] == "full":
         system.train_full(dataset, epoch_count=t["epoch_count"], loud=True,
-                          lr_scale_cfg=t.get("scaled_learning_range"),
+                          lr_scale_cfg=t.get("learning_rate"),
                           prediction_range_cfg=d.get("prediction_range"),
                           grad_clip_cfg=t.get("grad_clip"),
                           delta_clip_cfg=t.get("delta_clip"))
@@ -246,7 +249,7 @@ def run_train(settings: Settings, logger) -> None:
                      loud=True,
                      judge_min_clusters=t.get("judge_min_clusters"),
                      judge_max_clusters=t.get("judge_max_clusters"),
-                     lr_scale_cfg=t.get("scaled_learning_range"),
+                     lr_scale_cfg=t.get("learning_rate"),
                      prediction_range_cfg=d.get("prediction_range"),
                      grad_clip_cfg=t.get("grad_clip"),
                      delta_clip_cfg=t.get("delta_clip"))
@@ -508,7 +511,7 @@ def run_compare(settings: Settings, logger) -> None:
         run_mlp        = c.get("run_mlp", True),
         run_system     = c.get("run_system", True),
         output_csv     = csv_path,
-        lr_scale_cfg   = t.get("scaled_learning_range"),
+        lr_scale_cfg   = t.get("learning_rate"),
         prediction_range_cfg = d.get("prediction_range"),
         grad_clip_cfg  = t.get("grad_clip"),
         delta_clip_cfg = t.get("delta_clip"),

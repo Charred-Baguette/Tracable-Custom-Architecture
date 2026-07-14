@@ -149,7 +149,7 @@ class SegmentHandlerWrapper:
             'related_train_error_pct':seg_metrics.get('related_train_error_pct', ''),
             'notes': (
                 f'max_x={self.max_x},dim={self.dimensions},'
-                f"lr_scale={'on' if lr_scale_cfg and lr_scale_cfg.get('enabled') else 'off'},"
+                f"lr_mode={lr_scale_cfg.get('mode', 'auto') if lr_scale_cfg else 'off'},"
                 f"pred_range={'manual' if prediction_range_cfg and prediction_range_cfg.get('mode') == 'manual' else ('auto' if prediction_range_cfg else 'off')},"
                 f"grad_clip={'manual' if grad_clip_cfg and grad_clip_cfg.get('mode') == 'manual' else ('auto' if grad_clip_cfg else 'off')},"
                 f"delta_clip={'manual' if delta_clip_cfg and delta_clip_cfg.get('mode') == 'manual' else ('auto' if delta_clip_cfg else 'off')}"

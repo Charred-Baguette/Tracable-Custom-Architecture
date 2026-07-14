@@ -40,10 +40,16 @@ _DEFAULTS = {
         "judge_min_clusters": 4,
         "judge_max_clusters": 20,
         "test_split": 0.2,
-        "scaled_learning_range": {
-            "enabled": False,
-            "min_lr_scale": 0.5,
-            "max_lr_scale": 3.0,
+        "learning_rate": {
+            "mode": "auto",        # "auto" | "manual-scale" | "manual-full"
+            "min_lr_scale": 0.5,   # auto: clamp FLOOR for the row-count formula (2000/train_rows)
+                                    # manual-scale: literal min endpoint of the decay curve
+                                    # manual-full: unused
+            "max_lr_scale": 3.0,   # auto: clamp CEILING for the row-count formula
+                                    # manual-scale: literal max endpoint (decay solved from epoch_count)
+                                    # manual-full: literal starting scale (decay set explicitly below)
+            "decay": None,         # manual-full only: literal per-epoch decay factor (e.g. 0.85)
+                                    # ignored / auto-solved in "auto" and "manual-scale"
         },
         "grad_clip": {
             "mode": "auto",   # "auto" (derive from dataset.prediction_range span) or "manual"
@@ -92,6 +98,7 @@ _VALID_AGG_MODE      = {"bma", "simple_mean", "relevance_weighted"}
 _VALID_PRED_RANGE_MODE = {"auto", "manual"}
 _VALID_GRAD_CLIP_MODE = {"auto", "manual"}
 _VALID_DELTA_CLIP_MODE = {"auto", "manual"}
+_VALID_LR_MODE = {"auto", "manual-scale", "manual-full"}
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -155,12 +162,24 @@ class Settings:
             # Warn rather than crash — path may be valid at runtime from a different cwd
             pass
 
-        slr = self._data["training"].get("scaled_learning_range", {})
-        if slr.get("min_lr_scale", 0) > slr.get("max_lr_scale", 0):
-            raise ValueError(
-                "settings.json: training.scaled_learning_range.min_lr_scale "
-                "must be <= max_lr_scale"
-            )
+        lr = self._data["training"].get("learning_rate", {})
+        lr_mode = lr.get("mode", "auto")
+        if lr_mode not in _VALID_LR_MODE:
+            raise ValueError(f"settings.json: training.learning_rate.mode '{lr_mode}' not in {_VALID_LR_MODE}")
+        if lr_mode in ("auto", "manual-scale"):
+            if lr.get("min_lr_scale", 0) > lr.get("max_lr_scale", 0):
+                raise ValueError(
+                    "settings.json: training.learning_rate.min_lr_scale must be <= max_lr_scale"
+                )
+        if lr_mode == "manual-full":
+            if lr.get("decay") is None:
+                raise ValueError(
+                    "settings.json: training.learning_rate.mode is 'manual-full' but decay is not set"
+                )
+            if not (0 < lr["decay"] <= 1):
+                raise ValueError("settings.json: training.learning_rate.decay must be in (0, 1]")
+            if lr.get("max_lr_scale") is None or lr["max_lr_scale"] <= 0:
+                raise ValueError("settings.json: training.learning_rate.max_lr_scale must be > 0")
 
         pr = self._data["dataset"].get("prediction_range", {})
         pr_mode = pr.get("mode", "auto")
